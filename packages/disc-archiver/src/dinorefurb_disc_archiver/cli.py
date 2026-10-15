@@ -206,6 +206,8 @@ def _report_redump(report: dict | None) -> None:  # type: ignore[type-arg]
         print(f"  name: {item['path']} is {item['datName']!r} in the DAT")
     for difference in report["differences"]:
         print(f"  {difference}")
+    if nearest := redump.candidates_summary(report):
+        print(f"  {nearest}")
 
 
 def _tools() -> int:
@@ -266,6 +268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(result, indent=2))
             if redump_report is not None:
                 _log(f"redump: {redump.summary(redump_report)}")
+                if nearest := redump.candidates_summary(redump_report):
+                    _log(f"redump: {nearest}")
             failed = not all(c.matched for c in checks) or (redump_report is not None and redump_report["status"] == "mismatched")
             identified = manifest is None or result["manifest"]["identified"]  # type: ignore[index]
             return EXIT_MISMATCH if failed or not identified else EXIT_OK

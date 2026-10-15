@@ -434,6 +434,8 @@ class ArchiverWindow:
         if report is not None:
             lines.append(f"Redump: {redump.summary(report)}")
             lines += [f"  {d}" for d in report["differences"]]
+            if nearest := redump.candidates_summary(report):
+                lines.append(f"  {nearest}")
         for line in lines:
             self._append(line)
         title = "Copy made" if manifest_ok(manifest) else "Copy made, with problems"

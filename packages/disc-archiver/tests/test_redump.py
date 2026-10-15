@@ -216,6 +216,99 @@ class RedumpTests(unittest.TestCase):
         self.assertEqual(code, EXIT_OK)
         self.assertEqual((manifest["redump"]["status"], manifest["redump"]["game"]), ("matched", "Synth Game"))
 
+    def other_pressing(self, name: str, data_size: str | None = "4704", marker: str = "6") -> list[str]:
+        """A game whose track files have the copy's sizes and other hashes, and, with ``data_size``,
+        another size for the data track."""
+        other = {"crc": marker * 8, "md5": marker * 32, "sha1": marker * 40}
+        roms = [rom_xml(self.cue, name=f"{name}.cue", sha1="5" * 40)]
+        for number, track in enumerate(self.tracks, 1):
+            size = {"size": data_size} if number == 1 and data_size else {}
+            roms.append(rom_xml(track, name=f"{name} (Track {number}).bin", **other, **size))
+        return roms
+
+    def test_a_pressing_the_dat_does_not_list_names_its_nearest_games(self) -> None:
+        # Same audio sizes and another data track size, as a different build of the data track gives.
+        games = {"Synth Game (Disc 1)": self.other_pressing("Synth Game (Disc 1)"), "Synth Game (Disc 1) (Alt)": self.other_pressing("Synth Game (Disc 1) (Alt)")}
+        code, out, manifest = self.convert(self.write_dat(dat_xml(games)), "--name", "Synth Game")
+        self.assertEqual(code, EXIT_OK, out)
+        report = manifest["redump"]
+        self.assertEqual(report["status"], "notListed")
+        self.assertEqual([c["game"] for c in report["candidates"]], ["Synth Game (Disc 1)", "Synth Game (Disc 1) (Alt)"])
+        first = report["candidates"][0]
+        self.assertEqual((first["trackCount"], first["trackCountMatches"]), (3, True))
+        self.assertEqual(
+            first["tracks"][0],
+            {"path": "bincue-split/Synth Game (Track 1).bin", "datName": "Synth Game (Disc 1) (Track 1).bin", "sizeMatches": False, "hashMatches": False},
+        )
+        self.assertEqual([(t["sizeMatches"], t["hashMatches"]) for t in first["tracks"][1:]], [(True, False), (True, False)])
+        hint = report["differences"][-1]
+        self.assertIn("every audio track has the size of its counterpart in 'Synth Game (Disc 1)', 'Synth Game (Disc 1) (Alt)'", hint)
+        self.assertIn("The DAT cannot prove it", hint)
+        self.assertIn("nearest by track size: 'Synth Game (Disc 1)' (2 of 3 sizes, 0 hashes, 3 tracks)", out)
+
+    def test_the_same_data_size_gives_no_pressing_hint(self) -> None:
+        dat = self.write_dat(dat_xml({"Synth Game (Disc 1)": self.other_pressing("Synth Game (Disc 1)", data_size=None)}))
+        code, _, manifest = self.convert(dat)
+        self.assertEqual(code, EXIT_OK)
+        report = manifest["redump"]
+        self.assertEqual(report["status"], "notListed")
+        self.assertEqual([t["sizeMatches"] for t in report["candidates"][0]["tracks"]], [True, True, True])
+        self.assertFalse(any("every audio track" in d for d in report["differences"]))
+
+    def test_check_names_the_nearest_games_and_the_pressing_hint(self) -> None:
+        split = sorted(self.sheet.parent.glob("*.bin"))
+        other = {"crc": "6" * 8, "md5": "6" * 32, "sha1": "6" * 40}
+        roms = [rom_xml(t, **other, **({"size": "4704"} if n == 0 else {})) for n, t in enumerate(split)]
+        code, out, err = run("check", "--input", str(self.sheet), "--dat", str(self.write_dat(dat_xml({"Synth Game (Alt)": roms}))))
+        self.assertEqual(code, EXIT_OK)
+        report = json.loads(out)["redump"]
+        self.assertEqual(report["candidates"][0]["game"], "Synth Game (Alt)")
+        self.assertIn("every audio track has the size", report["differences"][-1])
+        self.assertIn("redump: nearest by track size: 'Synth Game (Alt)'", err)
+
+    def test_a_mismatched_copy_lists_candidates(self) -> None:
+        code, _, manifest = self.convert(self.reference_dat(sha1="4" * 40), "--name", "Synth Game")
+        self.assertEqual(code, EXIT_MISMATCH)
+        report = manifest["redump"]
+        self.assertEqual(report["status"], "mismatched")
+        self.assertEqual([c["game"] for c in report["candidates"]], ["Synth Game"])
+        tracks = report["candidates"][0]["tracks"]
+        self.assertEqual([(t["sizeMatches"], t["hashMatches"]) for t in tracks], [(True, True), (True, False), (True, True)])
+        # Every size agrees, so the data track is not the difference.
+        self.assertFalse(any("every audio track" in d for d in report["differences"]))
+
+    def test_matched_and_not_compared_reports_list_no_candidates(self) -> None:
+        _, _, manifest = self.convert(self.reference_dat(), "--name", "Synth Game")
+        self.assertEqual((manifest["redump"]["status"], manifest["redump"]["candidates"]), ("matched", []))
+        iso = self.dir / "Synth.iso"
+        iso.write_bytes(iso_image())
+        output = self.dir / "from-iso"
+        run("convert", "--input", str(iso), "--output", str(output), "--dat", str(self.reference_dat()), "--format", "iso", "--accept-personal-use")
+        manifest = json.loads((output / MANIFEST_NAME).read_text())
+        self.assertEqual((manifest["redump"]["status"], manifest["redump"]["candidates"]), ("notCompared", []))
+        # An image is no redumper dump, so nothing was analysed.
+        self.assertIsNone(manifest["source"]["discAnalysis"])
+
+    def test_at_most_five_candidates_ranked_by_sizes_then_hashes_then_name(self) -> None:
+        games = {f"Game {letter}": self.other_pressing(f"Game {letter}") for letter in "GFEDCBA"}
+        # One audio track with the copy's hashes too: ranked first among equal sizes.
+        hashed = self.other_pressing("Game Z")
+        hashed[3] = rom_xml(self.tracks[2], name="Game Z (Track 3).bin")
+        games["Game Z"] = hashed
+        # Every size equal: ranked before all of them.
+        games["Game Y"] = self.other_pressing("Game Y", data_size=None)
+        _, _, manifest = self.convert(self.write_dat(dat_xml(games)), "--name", "Synth Game")
+        report = manifest["redump"]
+        self.assertEqual(report["status"], "mismatched")
+        self.assertEqual([c["game"] for c in report["candidates"]], ["Game Y", "Game Z", "Game A", "Game B", "Game C"])
+
+    def test_no_track_of_the_same_size_lists_no_candidates(self) -> None:
+        other = self.dir / "other.bin"
+        other.write_bytes(b"\x01" * 2352)
+        _, out, manifest = self.convert(self.write_dat(dat_xml({"Unrelated": [rom_xml(other)]})))
+        self.assertEqual(manifest["redump"]["candidates"], [])
+        self.assertNotIn("nearest by track size", out)
+
     def test_a_refused_dat_stops_the_run_before_anything_is_written(self) -> None:
         dat = self.write_dat("<datafile><game name='x'>")
         code, _, err = run("convert", "--input", str(self.sheet), "--output", str(self.dir / "out"), "--dat", str(dat), "--accept-personal-use")

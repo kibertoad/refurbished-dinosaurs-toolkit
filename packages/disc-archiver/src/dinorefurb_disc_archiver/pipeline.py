@@ -665,8 +665,10 @@ def derive(
         )
     redump_report = None
     if dat is not None:
-        redump_report = _redump(dat, root, outputs, unavailable)
+        redump_report = _redump(dat, root, outputs, unavailable, disc)
         log(f"redump: {redump.summary(redump_report)}")
+        if nearest := redump.candidates_summary(redump_report):
+            log(f"redump: {nearest}")
     manifest = {
         "manifest": MANIFEST_VERSION,
         "notice": f"A personal archival copy of a disc you own. Never share it. See {NOTICE_FILENAME}.",
@@ -688,13 +690,18 @@ def derive(
     return manifest
 
 
-def _redump(dat: redump.Dat, root: Path, outputs: list[dict], unavailable: list[dict]) -> dict[str, object]:  # type: ignore[type-arg]
+def _track_kinds(disc: Disc) -> list[str]:
+    """Each track's kind for ``redump.compare``: ``audio`` or ``data``."""
+    return ["audio" if t.is_audio else "data" for t in disc.tracks]
+
+
+def _redump(dat: redump.Dat, root: Path, outputs: list[dict], unavailable: list[dict], disc: Disc) -> dict[str, object]:  # type: ignore[type-arg]
     split = next((o for o in outputs if o["format"] == "bincue-split"), None)
     if split is None:
         reason = next((u["reason"] for u in unavailable if u["format"] == "bincue-split"), "it was not written")
         return redump.not_compared(dat, f"bincue-split, the layout Redump lists, could not be written: {reason}")
     sheet, *tracks = split["files"]
-    return redump.compare(dat, sheet, (root / sheet["path"]).read_bytes(), tracks)
+    return redump.compare(dat, sheet, (root / sheet["path"]).read_bytes(), tracks, _track_kinds(disc))
 
 
 def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
@@ -715,7 +722,7 @@ def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
             f"included), and {sheet.name} has another layout; convert the copy to bincue-split first"
         )
     return redump.compare(
-        dat, file_hashes(sheet, sheet.parent), sheet.read_bytes(), [file_hashes(s, s.parent) for s in sources]
+        dat, file_hashes(sheet, sheet.parent), sheet.read_bytes(), [file_hashes(s, s.parent) for s in sources], _track_kinds(disc)
     )
 
 
@@ -926,7 +933,9 @@ def archive(
     ``driveConfiguration`` is the drive configuration redumper read with, from its log (see
     ``backends.redumper_drive``), and null for any other source. ``dataErrors`` says what
     redumper's data errors affect when it stopped on them and the archiver wrote the image anyway
-    (see ``backends.Dump``), and is null when the dump had none.
+    (see ``backends.Dump``), and is null when the dump had none. ``discAnalysis`` is what
+    redumper's steps after the dump found on the disc, from its log (see
+    ``backends.redumper_disc_analysis``), and null for any other source.
     """
     from . import backends
 
@@ -964,11 +973,14 @@ def archive(
         corrected: bool | None = None
         applied = read_offset
         configuration: dict[str, object] | None = None
+        analysis: dict[str, object] | None = None
         if chosen.id == "redumper":
             redumper_log = dump.parent / f"{name}.log"
             text = redumper_log.read_text(encoding="utf-8", errors="replace") if redumper_log.is_file() else ""
             corrected, applied = backends.redumper_read_offset(text, list(backend_args))
             configuration = backends.redumper_drive(text, list(backend_args))
+            analysis = backends.redumper_disc_analysis(text)
+            _log_disc_analysis(log, analysis)
             if configuration is not None and configuration["sectorOrderSource"] == "auto-detected":
                 # Detection also runs for drives the database lists with the generic drive type.
                 who = "redumper" if configuration["inRedumperDatabase"] else "redumper does not list this drive and"
@@ -999,16 +1011,39 @@ def archive(
             "readOffset": applied,
             "driveConfiguration": configuration,
             "dataErrors": ripped.data_errors,
+            "discAnalysis": analysis,
         }
     else:
         assert image is not None
         dump = image
         name = check_name(name or image.stem)
-        source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None, "driveConfiguration": None, "dataErrors": None}
+        source = {
+            "kind": "image",
+            "file": image.name,
+            "readOffsetCorrected": None,
+            "readOffset": None,
+            "driveConfiguration": None,
+            "dataErrors": None,
+            "discAnalysis": None,
+        }
     with open_source(dump, output, log) as disc:
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(resolve_formats(formats if formats is not None else [RECOMMENDED], profile, disc.layout, raw))
         return derive(disc, output, name, wanted, profile, log, source, unread, loaded)
+
+
+def _log_disc_analysis(log: Log, analysis: dict[str, object] | None) -> None:
+    """Say which protection signs redumper found: protections, SecuROM schemes, offset shifts."""
+    if analysis is None:
+        return
+    found = [f"protection {p}" for p in analysis["protections"] or []]  # type: ignore[attr-defined]
+    found += [f"{s['system']} scheme {s['scheme']} in {s['file']}" for s in analysis["protectionSchemes"] or []]  # type: ignore[attr-defined]
+    shifts: list[dict[str, int]] = analysis["offsetShifts"] or []  # type: ignore[assignment]
+    if shifts:
+        offsets = ", ".join(f"{s['offset']:+} from LBA {s['lba']} ({s['count']} sectors)" for s in shifts)
+        found.append(f"write offset shifts: {offsets}")
+    if found:
+        log(f"redumper's log shows {'; '.join(found)}. The manifest's source.discAnalysis records them.")
 
 
 def reference_backend(backend: str) -> str:

@@ -61,7 +61,7 @@ redumper does not write the image of a dump whose data track has sectors the dri
 
 With at most 2,000 bad sectors it runs `redumper refine` once, at speed 8 with 3 rereads per sector (`--backend-arg=--speed=` or `--retries=` override them), with the sector order the dump used, and reads the sectors again. A slow reread clears dust and marginal reads; a sector that fails three slow reads fails the same way on more. With more bad sectors it does not reread: about ten minutes of rereads at most is the limit before dumping again is the better use of time.
 
-Then `redumper split` writes the image, with `--force-split` while bad sectors remain. redumper regenerates those sectors from the data it read, which is how Redump's dumps of such discs hold them, so a disc whose bad sectors are deliberate can still match its Redump entry. redumper's hash and info steps, which follow split in its disc sequence, are not run. The manifest's `source.dataErrors` records what happened (see [The output folder](#the-output-folder)):
+Then `redumper split` writes the image, with `--force-split` while bad sectors remain. redumper regenerates those sectors from the data it read, which is how Redump's dumps of such discs hold them, so a disc whose bad sectors are deliberate can still match its Redump entry. redumper's hash and info steps, which follow split in its disc sequence, are not run, so the info fields of `source.discAnalysis` are null for such a dump. The manifest's `source.dataErrors` records what happened (see [The output folder](#the-output-folder)):
 
 | `outcome` | Means | Exit code |
 |---|---|---|
@@ -257,9 +257,25 @@ names are reported separately. The outcome is:
 |---|---|---|
 | `matched` | Every track file and the cue sheet match one game's files, and the game lists no other file. | `0` |
 | `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings (a sheet redumper wrote outside Windows ends lines with LF), or its content differs. | `0` |
-| `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. | `0` |
+| `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. `candidates` names the games nearest by track size. | `0` |
 | `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. The DAT cannot tell a bad dump from an edition it does not list that shares some of the game's tracks; dumping again and comparing tells them apart. | `3` |
 | `notCompared` | `bincue-split` could not be written from this source (an ISO has no raw sectors). | `0` |
+
+For `notListed` and `mismatched`, `candidates` lists up to 5 games of the DAT nearest to the copy by track size; it is `[]` for the other outcomes. Track files are paired by position: the copy's Nth track with the game's Nth file other than a cue sheet, in the DAT's order, which is track order in Redump's DATs. A game is listed when at least one pair has the same size. Games are ranked by how many pairs agree in size, then by how many agree in size and all three hashes, then by name. Each candidate gives the `game`, its `trackCount`, whether that equals the copy's (`trackCountMatches`), and for each of the copy's tracks its `path`, the paired file's `datName` (null when the game has fewer files), `sizeMatches` and `hashMatches`. The run prints them on one line after the outcome.
+
+When a candidate has as many tracks as the copy, every audio track has the size of its counterpart and no data track does, `differences` says so. That is what a pressing the DAT does not list looks like, with another build of the data track: a misread changes a track's bytes, not its size. The DAT cannot prove it, so the hint names the next steps instead of a verdict.
+
+#### When the DAT does not list the disc
+
+To judge a copy the DAT reports as `notListed` (or `mismatched` with tracks that differ):
+
+1. Download the system's DAT from [redump.org/downloads](https://redump.org/downloads/). The archiver never downloads it.
+2. Run `disc-archiver check --input <dump>.cue --dat <the DAT>` on the split dump in `archival/`, or `rip` and `convert` with `--dat`.
+3. Read `candidates`. Several entries for the same title and disc number are common, usually for different pressings or versions. If every audio track of a candidate has the copy's size while the data track's size differs, the copy is most likely a pressing the DAT does not list. Audio tracks of two pressings can have equal sizes and different hashes. A bad read does not change sizes, so it does not produce this pattern.
+4. Compare the write offset. A dump's `source.discAnalysis.writeOffset` that agrees with the one on the candidates' Redump pages supports the same mastering family.
+5. Read the protection signs in `source.discAnalysis`: a `protectionSchemes` entry, `offsetShifts` whose offsets differ by exactly 588 samples (one sector, so the sector headers are one sector off in those ranges), and `msfErrors` and `eccErrors` confined to those ranges. With zero SCSI and C2 errors in the dump (`media errors:` in `archival/<name>.log`), these are properties of the pressing, written on purpose, not read errors. redumper's `protection: none` covers only the schemes its protection step checks.
+6. Compare the disc's ring codes, barcode and version with the candidates' Redump pages. A difference there confirms another pressing; submitting the dump to Redump is how it gets listed.
+7. Dump again on another drive into a new output folder. The same hashes from a second drive rule out a bad read.
 
 A DAT is read only when it is UTF-8 Logiqx XML of at most 128 MiB, every file lists a decimal
 size and well-formed CRC32, MD5 and SHA-1, and it uses no entities. The DTD a document type
@@ -377,6 +393,16 @@ My Game/
   - `ranges`: the sectors left, as `first` and `last` LBA and the count of bad `sectors` between them; sectors less than 16 apart share a range.
   - `files`: each file of the primary ISO 9660 tree that holds a bad sector, as its `path` and the count of `sectors`; empty when none does, null when the volume could not be read. A directory whose records hold a bad sector is listed too, with a path ending in `/`, since the damage can hide the files it lists.
   - `outcome`: `cleared`, `outsideFiles`, `insideFiles`, `tooMany` or `unlocated`.
+
+  `discAnalysis` is what redumper's steps after the dump logged about the disc, read from the log of its last run that dumped from the drive to the end of the log, so the `refine` and `split` runs added after [data errors](#data-errors) count too. Where a step ran more than once, its last run counts. It is null for any other source and when the log shows no dump. A field is null when the step that logs it did not run or did not log it. The archiver prints a line when it holds a protection, a SecuROM scheme or offset shifts. The fields:
+  - `protections`: what redumper's protection step found, `[]` when it logged `protection: none`. redumper checks for SafeDisc and a few console schemes there; `none` does not rule out a protection it does not check for.
+  - `writeOffset`: the disc write offset in samples, from the split step.
+  - `offsetShifts`: the split step's offset configuration of a data disc, each run of sectors as its first `lba` (counted by position in the dump), the `count` of sectors and the write `offset` in samples. Listed only when the runs have more than one offset; `[]` when they share one, null for a disc without a data track.
+  - `universalHashSha1`: the split step's Universal Hash (SHA-1), null when redumper skipped it.
+  - `subchannelShift`: the shift in sectors of redumper's `shifting subchannel data` warning, null when it logged none.
+  - `dataTracks`: each data track of the info step, as its `file`, its `msfErrors`, `eccErrors` and `edcErrors` (sectors whose header address, ECC or EDC is wrong), each a `count` and `ranges` of `first` and `last` LBA, zero when redumper logged none, and `redumpInfoErrors`, redumper's count of sectors with a wrong ECC or EDC or differing mode 2 subheader copies, each sector counted once. LBAs count sectors by their position in the dump. Null when the info step did not run, as after data errors.
+  - `protectionSchemes`: each SecuROM block of the info step, as `system`, `file` and `scheme` (`1` to `4`, or `unknown`). Null when the info step did not run.
+  - `warnings`: every warning of the protection, refine, split, hash and info steps, without the `warning:` prefix, each once, in the order logged. Warnings about the drive and from the dump itself are left out.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the
@@ -406,7 +432,9 @@ My Game/
   see [Comparing with a Redump DAT](#comparing-with-a-redump-dat)), the game the track files match
   best (`game`, `null` when none), each file of the `bincue-split` copy with its `kind`
   (`cueSheet` or `track`), whether it `matched` and the DAT's name for it (`datName`), the files
-  whose name differs from the DAT's (`nameDifferences`), and what differed (`differences`).
+  whose name differs from the DAT's (`nameDifferences`), what differed (`differences`), and for
+  `notListed` and `mismatched` the games nearest by track size (`candidates`, see
+  [When the DAT does not list the disc](#when-the-dat-does-not-list-the-disc)).
 
 The formats the archiver writes are compared with the source sample for sample: each is written
 from the same samples, and none of them moves the audio.

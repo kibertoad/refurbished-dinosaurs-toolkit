@@ -13,7 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from synthetic import SyntheticDisc, iso_extent, iso_image, redumper_log
+from synthetic import REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, redumper_analysis_steps, redumper_log
 
 from dinorefurb_disc_archiver import backends, cli, dataerrors, redumper
 from dinorefurb_disc_archiver.disc import DiscError
@@ -30,13 +30,14 @@ from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 # STAND_IN_ERRORS, JSON {"bad": [LBAs], "transient": bool}, makes the disc a data-only one whose
 # dump has C2 errors in those sectors: the disc run stops at split as redumper does, "refine"
 # clears them when transient, and "split" refuses remaining ones without --force-split. Every
-# call's arguments are appended to calls.json.
+# call's arguments are appended to calls.json. STAND_IN_ANALYSIS adds the protection, split, hash
+# and info steps of a protected disc to the disc run's log.
 FAKE_REDUMPER = """\
 #!{python}
 import json, os, sys
 sys.path.insert(0, {tests!r})
 from pathlib import Path
-from synthetic import SyntheticDisc, iso_image, redumper_log, write_redumper_dump
+from synthetic import SyntheticDisc, iso_image, redumper_analysis_steps, redumper_log, write_redumper_dump
 command = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "disc"
 args = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
 folder, name = Path(args["image-path"]), args["image-name"]
@@ -82,6 +83,7 @@ log = redumper_log(
     q_errors=1000 if drive == "misread" else 2,
     write_offset=0 if errors else None,
     data_error_sectors=len(errors["bad"]) if errors else None,
+    extra_lines=tuple(redumper_analysis_steps()) if os.environ.get("STAND_IN_ANALYSIS") else (),
 )
 Path(folder, name + ".log").write_text(log)
 if errors:
@@ -176,10 +178,35 @@ class ProgramBackendTests(unittest.TestCase):
                     "sectorOrderSource": "database",
                 },
                 "dataErrors": None,
+                # The stand-in's log has no step after the dump.
+                "discAnalysis": {
+                    "protections": None,
+                    "writeOffset": None,
+                    "offsetShifts": None,
+                    "universalHashSha1": None,
+                    "subchannelShift": None,
+                    "dataTracks": None,
+                    "protectionSchemes": None,
+                    "warnings": [],
+                },
             },
         )
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue"])  # type: ignore[union-attr]
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+
+    def test_protection_signs_in_redumpers_log_are_recorded_and_printed(self) -> None:
+        printed = io.StringIO()
+        arguments = ["rip", "--drive", "E:", "--backend", "redumper", "--output", str(self.dir / "out"), "--name", "Game", "--accept-personal-use"]
+        with mock.patch.dict(os.environ, {"STAND_IN_ANALYSIS": "1"}), redirect_stdout(io.StringIO()), redirect_stderr(printed):
+            code = cli.main(arguments)
+        self.assertEqual(code, cli.EXIT_OK, printed.getvalue())
+        analysis = json.loads((self.dir / "out" / MANIFEST_NAME).read_text())["source"]["discAnalysis"]
+        self.assertEqual(analysis["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown"}])
+        self.assertEqual([s["offset"] for s in analysis["offsetShifts"]], [-572, 16, -572])
+        self.assertIn(
+            "redumper's log shows SecuROM scheme unknown in Synth Disc (Track 1).bin; write offset shifts: -572 from LBA -1",
+            printed.getvalue(),
+        )
 
     def test_a_relative_output_folder_is_not_nested_inside_itself(self) -> None:
         previous = Path.cwd()
@@ -249,6 +276,12 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_MISMATCH)
         self.assertIn("data errors: insideFiles, 1 of 1 bad sectors left after reading them again", printed.getvalue())
         self.assertIn("in /README.TXT: 1 sectors", printed.getvalue())
+
+    def test_after_data_errors_the_analysis_has_no_info_step(self) -> None:
+        manifest, _ = self._rip_with_errors([5, 6])
+        analysis = manifest["source"]["discAnalysis"]  # type: ignore[index]
+        # The stand-in's disc run logs the split that stopped, with the disc write offset.
+        self.assertEqual((analysis["writeOffset"], analysis["dataTracks"], analysis["protectionSchemes"]), (0, None, None))
 
     def test_too_many_errors_are_not_read_again(self) -> None:
         with mock.patch.object(dataerrors, "REFINE_MAX_SECTORS", 1):
@@ -487,6 +520,112 @@ class RedumperDriveTests(unittest.TestCase):
 
     def test_a_dump_that_logged_no_totals_is_not_judged(self) -> None:
         self.assertIsNone(backends.redumper_misread_layout(redumper_log(dumped=False)))
+
+
+class RedumperDiscAnalysisTests(unittest.TestCase):
+    """What redumper's protection, split and info steps found, read from its log."""
+
+    def analysis(self, text: str) -> dict:  # type: ignore[type-arg]
+        found = backends.redumper_disc_analysis(text)
+        assert found is not None
+        return found
+
+    def test_a_protected_disc_gives_every_field(self) -> None:
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps())))
+        self.assertEqual(found["protections"], [])
+        self.assertEqual(found["writeOffset"], -572)
+        self.assertEqual(
+            found["offsetShifts"],
+            [{"lba": -1, "count": 40951, "offset": -572}, {"lba": 40949, "count": 477, "offset": 16}, {"lba": 41426, "count": 1162, "offset": -572}],
+        )
+        self.assertEqual(found["universalHashSha1"], REDUMPER_TEST_HASH)
+        self.assertEqual(found["subchannelShift"], -3)
+        self.assertEqual(
+            found["dataTracks"],
+            [
+                {
+                    "file": "Synth Disc (Track 1).bin",
+                    "msfErrors": {"count": 613, "ranges": [{"first": 40950, "last": 41426}, {"first": 42589, "last": 42724}]},
+                    "eccErrors": {
+                        "count": 4,
+                        "ranges": [{"first": 40949, "last": 40949}, {"first": 41426, "last": 41426}, {"first": 42588, "last": 42588}, {"first": 42724, "last": 42724}],
+                    },
+                    "edcErrors": {"count": 0, "ranges": []},
+                    "redumpInfoErrors": 4,
+                }
+            ],
+        )
+        self.assertEqual(found["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown"}])
+        # Each warning once, in order; the Q-Data lines after the SecuROM block are not kept.
+        self.assertEqual(
+            found["warnings"],
+            [
+                "shifting subchannel data (shift: -3)",
+                "TOC / QTOC mismatch, track index 01 (track: 1, LBA: 0 <=> -3)",
+                "TOC / QTOC mismatch, nonexistent track in QTOC (track: A)",
+                "incomplete pre-gap (session: 1, unavailable: 149/150)",
+                "lead-out ends with unavailable sector (session: 1)",
+            ],
+        )
+
+    def test_warnings_before_the_steps_after_the_dump_are_not_kept(self) -> None:
+        # A drive the database lacks gets warnings in the run's drive information.
+        found = self.analysis(redumper_log(in_database=False, extra_lines=tuple(redumper_analysis_steps())))
+        self.assertNotIn("drive not found in the database", found["warnings"])
+        self.assertNotIn("using generic drive", found["warnings"])
+
+    def test_protections_found(self) -> None:
+        one = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(protection="SafeDisc 00000001.TMP, C2: 4, gap range: 100-103"))))
+        self.assertEqual(one["protections"], ["SafeDisc 00000001.TMP, C2: 4, gap range: 100-103"])
+        several = ("PS2/Datel DATEL.BIN, C2: 2, range: 10-11", "PS2/Datel FakeTOC, lead-out: 2000, ISO9660 size: 1000")
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(protection=several))))
+        self.assertEqual(found["protections"], list(several))
+
+    def test_one_offset_lists_no_shifts(self) -> None:
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(offsets=((-1, -1, 1000, 0),), write_offset=0))))
+        self.assertEqual((found["offsetShifts"], found["writeOffset"]), ([], 0))
+
+    def test_an_info_step_without_errors_or_securom(self) -> None:
+        text = redumper_log(extra_lines=tuple(redumper_analysis_steps(securom=None)))
+        text = text.replace("  MSF errors: 613 (LBA: 40950-41426, 42589-42724)\n", "").replace("  REDUMP.INFO errors: 4", "  REDUMP.INFO errors: 0")
+        found = self.analysis(text)
+        self.assertEqual(found["protectionSchemes"], [])
+        track = found["dataTracks"][0]
+        self.assertEqual((track["msfErrors"], track["redumpInfoErrors"]), ({"count": 0, "ranges": []}, 0))
+
+    def test_without_an_info_step_its_fields_are_null(self) -> None:
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(info=False))))
+        self.assertEqual((found["dataTracks"], found["protectionSchemes"]), (None, None))
+        self.assertEqual(found["writeOffset"], -572)
+        self.assertEqual(found["subchannelShift"], -3)
+
+    def test_after_data_errors_the_split_run_the_archiver_adds_counts(self) -> None:
+        # The disc run stops at split; refine reads the drive again; split writes the image.
+        dump = redumper_log(write_offset=-572, data_error_sectors=2, extra_lines=("", "*** END (time check: 0s)"))
+        refine = redumper_log(arguments="refine --drive=E: --image-name=Game")
+        split = "\n".join(
+            [
+                "=== 2026-01-02 05:00:00 " + "=" * 56,
+                "redumper (build: b761)",
+                "",
+                "arguments: split --image-name=Game --force-split",
+                *redumper_analysis_steps(info=False)[5:],
+            ]
+        )
+        found = self.analysis(dump + refine + split)
+        self.assertEqual([s["offset"] for s in found["offsetShifts"]], [-572, 16, -572])
+        self.assertEqual((found["writeOffset"], found["universalHashSha1"]), (-572, REDUMPER_TEST_HASH))
+        self.assertEqual((found["protections"], found["dataTracks"], found["protectionSchemes"]), (None, None, None))
+
+    def test_only_the_last_run_that_dumped_counts(self) -> None:
+        earlier = redumper_log(extra_lines=tuple(redumper_analysis_steps(securom="2")))
+        last = redumper_log(extra_lines=tuple(redumper_analysis_steps(securom=None, write_offset=+6, offsets=((-1, -1, 1000, 6),))))
+        found = self.analysis(earlier + last)
+        self.assertEqual((found["protectionSchemes"], found["writeOffset"], found["offsetShifts"]), ([], 6, []))
+
+    def test_a_log_without_a_dump_gives_nothing(self) -> None:
+        self.assertIsNone(backends.redumper_disc_analysis(""))
+        self.assertIsNone(backends.redumper_disc_analysis("\n".join(redumper_analysis_steps())))
 
 
 class DataCopyTests(unittest.TestCase):
