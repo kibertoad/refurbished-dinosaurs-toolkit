@@ -45,6 +45,14 @@ calls.write_text(json.dumps([*(json.loads(calls.read_text()) if calls.is_file() 
 errors = json.loads(os.environ.get("STAND_IN_ERRORS", "null"))
 remaining = folder / "remaining.json"
 if command == "refine":
+    # refine reads the drive, so it logs the drive's configuration, without auto-detection.
+    refine_log = redumper_log(
+        in_database=os.environ.get("STAND_IN_DRIVE", "known") == "known",
+        configured_order=args.get("drive-sector-order", "DATA_C2_SUB"),
+        arguments=" ".join(sys.argv[1:]),
+    )
+    with Path(folder, name + ".log").open("a") as appended:
+        appended.write(refine_log)
     if errors and errors.get("transient"):
         write_redumper_dump(folder, name, iso_image())
         remaining.write_text("[]")
@@ -217,6 +225,9 @@ class ProgramBackendTests(unittest.TestCase):
         # The order --auto-detect found in the disc run is given to refine, which does not detect.
         self.assertIn("--drive-sector-order=DATA_SUB_C2", next(c for c in calls if c[0] == "refine"))
         self.assertIn("--force-split", next(c for c in calls if c[0] == "split"))
+        # The refine run logs the drive again; the manifest keeps the configuration the dump used.
+        configuration = manifest["source"]["driveConfiguration"]  # type: ignore[index]
+        self.assertEqual((configuration["sectorOrder"], configuration["sectorOrderSource"]), ("DATA_SUB_C2", "auto-detected"))
         record = manifest["source"]["dataErrors"]  # type: ignore[index]
         self.assertEqual(
             record,
@@ -392,6 +403,14 @@ class RedumperDriveTests(unittest.TestCase):
         assert drive is not None
         self.assertTrue(drive["inRedumperDatabase"])
         self.assertEqual(backends.redumper_media_errors(text), {"scsiSamples": 0, "c2Samples": 0, "qSectors": 3})
+
+    def test_a_refine_run_does_not_replace_the_dump_run(self) -> None:
+        # refine logs the drive's configuration too, with the order it was given and no detection.
+        dump = redumper_log(in_database=False, detected_order="DATA_SUB_C2", arguments="--drive=E: --auto-detect")
+        refine = redumper_log(in_database=False, configured_order="DATA_SUB_C2", arguments="refine --drive=E: --drive-sector-order=DATA_SUB_C2")
+        drive = backends.redumper_drive(dump + refine)
+        assert drive is not None
+        self.assertEqual((drive["sectorOrder"], drive["sectorOrderSource"]), ("DATA_SUB_C2", "auto-detected"))
 
     def test_a_log_without_a_configuration_says_nothing(self) -> None:
         for text in ("", "dump log\n"):

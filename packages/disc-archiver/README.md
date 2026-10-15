@@ -364,7 +364,7 @@ My Game/
   - `refined`: whether `redumper refine` read them again.
   - `sectors`: the bad sectors left, and `edcFailing`: how many of those have data whose EDC does not match.
   - `ranges`: the sectors left, as `first` and `last` LBA and the count of bad `sectors` between them; sectors less than 16 apart share a range.
-  - `files`: each file of the primary ISO 9660 tree that holds a bad sector, as its `path` and the count of `sectors`; empty when none does, null when the volume could not be read.
+  - `files`: each file of the primary ISO 9660 tree that holds a bad sector, as its `path` and the count of `sectors`; empty when none does, null when the volume could not be read. A directory whose records hold a bad sector is listed too, with a path ending in `/`, since the damage can hide the files it lists.
   - `outcome`: `cleared`, `outsideFiles`, `insideFiles`, `tooMany` or `unlocated`.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc

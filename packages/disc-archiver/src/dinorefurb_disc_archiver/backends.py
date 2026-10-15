@@ -139,7 +139,7 @@ def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[
         if misread := redumper_misread_layout(text):
             raise DiscError(misread) from None
         if not dataerrors.reported(text):
-            raise DiscError(f"{error}{_access_hint(text)}") from None
+            raise DiscError(f"{error}{_access_hint(dataerrors.runs(text)[-1])}") from None
         data_errors = _recover(program, drive, directory, name, log, extra, text)
     else:
         if misread := redumper_misread_layout(_read_text(redumper_log)):
@@ -249,9 +249,8 @@ def redumper_read_offset(log_text: str, extra: Sequence[str] = ()) -> tuple[bool
     return True, int(last.group(1))
 
 
-# redumper b761 starts each run's part of the log with "=== <date> <time> ====..." (``logger.ixx``),
-# and appends to a log it finds, so a log can hold several runs.
-_REDUMPER_RUN_START = re.compile(r"^=== \d{4}-\d{2}-\d{2} [\d:]+ =+\s*$", re.MULTILINE)
+# redumper b761 logs its command line after the program name; a refine run's starts with "refine".
+_REDUMPER_REFINE_RUN = re.compile(r"^arguments: refine\b", re.MULTILINE)
 _REDUMPER_INQUIRY = re.compile(r"^\s*inquiry: (.+?) - (.+?) \(revision level: (.*?), vendor specific: ", re.MULTILINE)
 _REDUMPER_CONFIGURATION_FIELDS = re.compile(
     r"^\s*configuration: (\S+) \(read offset: ([+-]?\d+), C2 shift: (\d+), pre-gap start: ([+-]?\d+), "
@@ -302,14 +301,21 @@ def redumper_detect_arguments(extra: Sequence[str]) -> list[str]:
 
 
 def redumper_last_run(log_text: str) -> str:
-    """The part of a redumper log written by its last run that read a drive.
+    """The part of a redumper log written by its last run that dumped from a drive.
 
     A run that only processed files (``split`` or ``protection``) logs no drive configuration and
-    is skipped. A log without run headers is taken as one run. Empty when no run read a drive.
+    is skipped. So is a ``refine`` run, which rereads the dump's bad sectors without
+    ``--auto-detect``: the configuration of the dump is the one its own run read with. A log
+    without run headers is taken as one run. Empty when no run dumped from a drive.
     """
-    starts = [m.start() for m in _REDUMPER_RUN_START.finditer(log_text)] or [0]
-    runs = [log_text[a:b] for a, b in zip(starts, [*starts[1:], len(log_text)])]
-    return next((run for run in reversed(runs) if _REDUMPER_CONFIGURATION_FIELDS.search(run)), "")
+    return next(
+        (
+            run
+            for run in reversed(dataerrors.runs(log_text))
+            if _REDUMPER_CONFIGURATION_FIELDS.search(run) and not _REDUMPER_REFINE_RUN.search(run)
+        ),
+        "",
+    )
 
 
 def redumper_drive(log_text: str, extra: Sequence[str] = ()) -> dict[str, object] | None:
@@ -430,8 +436,8 @@ _REDUMPER_DRIVE_NOT_OPENED = "unable to open drive"
 
 
 def _access_hint(log_text: str) -> str:
-    """How to get access to the drive, as a sentence after a failure, when the log shows redumper
-    could not open it; empty otherwise."""
+    """How to get access to the drive, as a sentence after a failure, when the log of the failed
+    run shows redumper could not open it; empty otherwise."""
     if _REDUMPER_DRIVE_NOT_OPENED not in log_text:
         return ""
     if sys.platform == "win32":

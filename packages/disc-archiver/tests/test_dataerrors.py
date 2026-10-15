@@ -58,6 +58,19 @@ class ExamineTests(unittest.TestCase):
         write_redumper_dump(self.dir, "d", bytes(image), {readme})
         self.assertEqual(dataerrors.examine(self.dir, "d", 0).files, {"/README.TXT": 1})
 
+    def test_a_bad_sector_in_a_directory_names_the_directory(self) -> None:
+        # The records of a damaged directory sector may hide files, so the directory holds it.
+        reader = pycdlib.PyCdlib()
+        reader.open_fp(io.BytesIO(self.iso))
+        try:
+            root = reader.get_record(iso_path="/").extent_location()
+        finally:
+            reader.close()
+        write_redumper_dump(self.dir, "d", self.iso, {root})
+        facts = dataerrors.examine(self.dir, "d", 0)
+        self.assertEqual(facts.files, {"/": 1})
+        self.assertEqual(dataerrors.outcome(1, facts), "insideFiles")
+
     def test_without_a_volume_the_files_are_unknown(self) -> None:
         write_redumper_dump(self.dir, "d", bytes(2048 * 20), {3})
         facts = dataerrors.examine(self.dir, "d", 0)
@@ -101,6 +114,8 @@ class LogTests(unittest.TestCase):
         log = redumper_log(write_offset=0, data_error_sectors=3) + redumper_log(write_offset=0)
         self.assertFalse(dataerrors.reported(log))
         self.assertIsNone(dataerrors.write_offset(redumper_log()))
+        # An earlier run's offset is not taken for a later run that logged none.
+        self.assertIsNone(dataerrors.write_offset(redumper_log(write_offset=5) + redumper_log()))
 
 
 if __name__ == "__main__":

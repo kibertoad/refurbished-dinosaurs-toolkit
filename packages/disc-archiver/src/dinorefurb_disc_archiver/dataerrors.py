@@ -19,8 +19,9 @@ refuses a volume whose primary volume descriptor copies differ.
 
 from __future__ import annotations
 
+import mmap
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 STATE_SAMPLES = 588
@@ -51,37 +52,44 @@ _WRITE_OFFSET = re.compile(r"^disc write offset: ([+-]?\d+)\s*$", re.MULTILINE)
 _SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 
 
-def _last_run(log_text: str) -> str:
-    starts = [m.start() for m in _RUN_START.finditer(log_text)]
-    return log_text[starts[-1] :] if starts else log_text
+def runs(log_text: str) -> list[str]:
+    """A redumper log split into the parts its runs wrote, oldest first.
+
+    redumper b761 starts each run's part with "=== <date> <time> ====..." (``logger.ixx``) and
+    appends to a log it finds, so a log can hold several runs. A log without run headers is taken
+    as one run.
+    """
+    starts = [m.start() for m in _RUN_START.finditer(log_text)] or [0]
+    return [log_text[a:b] for a, b in zip(starts, [*starts[1:], len(log_text)])]
 
 
 def reported(log_text: str) -> bool:
     """Whether redumper's last run stopped because the dump has data errors."""
-    return _DATA_ERRORS in _last_run(log_text)
+    return _DATA_ERRORS in runs(log_text)[-1]
 
 
 def write_offset(log_text: str) -> int | None:
-    """The disc write offset in samples the log gives last, or None."""
-    found = _WRITE_OFFSET.findall(log_text)
+    """The disc write offset in samples that redumper's last run gives, or None."""
+    found = _WRITE_OFFSET.findall(runs(log_text)[-1])
     return int(found[-1]) if found else None
 
 
-def bad_sectors(state: bytes, offset: int) -> list[int]:
+def bad_sectors(state: bytes | mmap.mmap, offset: int) -> list[int]:
     """The LBAs of the data sectors with at least one flagged sample, in order.
 
     ``offset`` is the disc write offset in samples: data sector ``L`` occupies the samples from
-    ``(L - STATE_FIRST_LBA) * STATE_SAMPLES + offset`` on.
+    ``(L - STATE_FIRST_LBA) * STATE_SAMPLES + offset`` on. After a flagged sample the search
+    resumes at the next sector, so the work grows with the bad sectors, not with their samples.
     """
-    flagged: set[int] = set()
+    flagged: list[int] = []
     marker = bytes([STATE_C2])
-    for slot in range(len(state) // STATE_SAMPLES):
-        end = (slot + 1) * STATE_SAMPLES
-        position = state.find(marker, slot * STATE_SAMPLES, end)
-        while position >= 0:
-            flagged.add((position - offset) // STATE_SAMPLES + STATE_FIRST_LBA)
-            position = state.find(marker, position + 1, end)
-    return sorted(flagged)
+    position = state.find(marker)
+    while position >= 0:
+        lba = (position - offset) // STATE_SAMPLES + STATE_FIRST_LBA
+        flagged.append(lba)
+        following = (lba + 1 - STATE_FIRST_LBA) * STATE_SAMPLES + offset
+        position = state.find(marker, max(following, position + 1))
+    return flagged
 
 
 def _scrambler() -> bytes:
@@ -172,9 +180,11 @@ class Scram:
 
 
 def file_extents(scram: Scram) -> list[tuple[int, int, str]] | None:
-    """Every file of the primary ISO 9660 tree as ``(first LBA, last LBA, path)``.
+    """Every file and directory of the primary ISO 9660 tree as ``(first LBA, last LBA, path)``.
 
-    The volume is read from the data track starting at LBA 0. None when sector 16 holds no
+    A directory's path ends with ``/``: a bad sector among its records can hide or garble the
+    files it lists, so it counts as a file holding that sector. A file of zero bytes holds no
+    sector. The volume is read from the data track starting at LBA 0. None when sector 16 holds no
     primary volume descriptor. Directories are followed once each and only within the volume.
     """
     descriptor = scram.user_data(16)
@@ -190,7 +200,9 @@ def file_extents(scram: Scram) -> list[tuple[int, int, str]] | None:
         if start in seen or not 0 < start < volume:
             continue
         seen.add(start)
-        for sector in range(start, min(start + (size + 2047) // 2048, volume)):
+        end = min(start + (size + 2047) // 2048, volume)
+        extents.append((start, max(end - 1, start), f"{path}/"))
+        for sector in range(start, end):
             data = scram.user_data(sector)
             position = 0
             while position < 2048 and data[position]:
@@ -207,8 +219,8 @@ def file_extents(scram: Scram) -> list[tuple[int, int, str]] | None:
                 length_bytes = int.from_bytes(record[10:14], "little")
                 if record[25] & 2:
                     pending.append((extent, length_bytes, child))
-                else:
-                    extents.append((extent, extent + max((length_bytes + 2047) // 2048, 1) - 1, child))
+                elif length_bytes:
+                    extents.append((extent, extent + (length_bytes + 2047) // 2048 - 1, child))
     return sorted(extents)
 
 
@@ -231,7 +243,7 @@ class Facts:
     sectors: list[int]
     edc_failing: int
     # Path to the number of bad sectors it holds; None when the file system could not be read.
-    files: dict[str, int] | None = field(default=None)
+    files: dict[str, int] | None = None
 
     def as_files(self) -> list[dict[str, object]] | None:
         """The files holding bad sectors, for the manifest."""
@@ -242,7 +254,12 @@ class Facts:
 
 def examine(directory: Path, name: str, offset: int) -> Facts:
     """Read the bad sectors of the dump ``name`` in ``directory``, their EDC and the files holding them."""
-    sectors = bad_sectors((directory / f"{name}.state").read_bytes(), offset)
+    sectors: list[int] = []
+    with (directory / f"{name}.state").open("rb") as state:
+        # The state file of a whole CD is over 200 MB: it is mapped, not read into memory.
+        if state.seek(0, 2):
+            with mmap.mmap(state.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                sectors = bad_sectors(mapped, offset)
     scram = Scram(directory / f"{name}.scram", offset)
     try:
         failing = sum(1 for lba in sectors if not edc_valid(scram.sector(lba)))
