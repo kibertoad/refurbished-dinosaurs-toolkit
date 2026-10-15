@@ -304,6 +304,14 @@ def _describe(shifts: tuple[int, ...]) -> str:
     return f"{text} and {more} more" if more > 0 else text
 
 
+def check_read_offset(offset: int) -> int:
+    """The read ``offset``, after checking it lies within :data:`MAXIMUM_READ_OFFSET` either way.
+    Raises :class:`DiscError` otherwise."""
+    if not -MAXIMUM_READ_OFFSET <= offset <= MAXIMUM_READ_OFFSET:
+        raise DiscError(f"a read offset of {offset} samples is past the {MAXIMUM_READ_OFFSET} any drive needs")
+    return offset
+
+
 def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> tuple[Path, dict[int, list[list[int]]]]:
     """Write a copy of a one-file raw dump with its audio moved by the drive's read ``offset``.
 
@@ -331,8 +339,7 @@ def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> 
     """
     from .cue import read_cue
 
-    if not -MAXIMUM_READ_OFFSET <= offset <= MAXIMUM_READ_OFFSET:
-        raise DiscError(f"a read offset of {offset} samples is past the {MAXIMUM_READ_OFFSET} any drive needs")
+    check_read_offset(offset)
     disc = read_cue(sheet)
     files = {t.source for t in disc.tracks}
     if len(files) != 1 or any(t.storage != "raw" for t in disc.tracks):
@@ -340,10 +347,11 @@ def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> 
     source = files.pop()
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / source.name
-    shutil.copyfile(source, target)
     shutil.copyfile(sheet, directory / sheet.name)
     unread: dict[int, list[list[int]]] = {}
-    with source.open("rb") as dump, target.open("r+b") as out:
+    # Bytes outside the audio runs are copied once; each run is written only by _shift_run.
+    copied = 0
+    with source.open("rb") as dump, target.open("wb") as out:
         for run in _audio_runs(disc):
             for track in run[1:]:
                 if track.pregap and not track.pregap_stored:
@@ -358,13 +366,16 @@ def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> 
                 bases.append((track, (position - start) // BYTES_PER_SAMPLE, first * SAMPLES_PER_SECTOR))
                 position += (stop - first) * RAW_SECTOR
             samples = (position - start) // BYTES_PER_SAMPLE
+            _copy_bytes(dump, out, copied, start)
             _shift_run(dump, out, start, samples, offset)
+            copied = position
             filled = (max(0, samples - offset), samples) if offset > 0 else (0, min(samples, -offset))
             for track, base, first_sample in bases:
                 track_samples = track.length * SAMPLES_PER_SECTOR - first_sample
                 low, high = max(filled[0], base), min(filled[1], base + track_samples)
                 if low < high:
                     unread.setdefault(track.number, []).append([low - base + first_sample, high - base + first_sample])
+        _copy_bytes(dump, out, copied, source.stat().st_size)
     log(f"Corrected the audio by a read offset of {offset:+d} samples into {directory}")
     for number, ranges in unread.items():
         for first, stop in ranges:
@@ -383,6 +394,14 @@ def _audio_runs(disc: Disc) -> list[list[Track]]:
                 runs.append([track])
         previous_audio = track.is_audio
     return runs
+
+
+def _copy_bytes(dump, out, low: int, high: int) -> None:  # type: ignore[no-untyped-def]
+    """Copy bytes ``low`` to ``high`` of ``dump`` to the same place in ``out``."""
+    dump.seek(low)
+    out.seek(low)
+    for position in range(low, high, _CHUNK_SAMPLES * BYTES_PER_SAMPLE):
+        out.write(dump.read(min(_CHUNK_SAMPLES * BYTES_PER_SAMPLE, high - position)))
 
 
 def _shift_run(dump, out, start: int, samples: int, offset: int) -> None:  # type: ignore[no-untyped-def]

@@ -211,6 +211,24 @@ class ManifestCheckTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("is not a version 1 rip-manifest.json", err)
 
+    def test_a_manifest_with_malformed_audio_entries_is_refused(self) -> None:
+        manifest = json.loads(self.manifest().read_text())
+        copy = self.copy("copy")
+        broken = self.dir / "broken.json"
+        cases = (
+            ("sha256", lambda entry: entry.pop("sha256"), "lacks its track number, sectors or sha256"),
+            ("unreadSamples", lambda entry: entry.update(unreadSamples=[5]), "unreadSamples is not a list"),
+            ("fingerprint track", lambda entry: entry["fingerprint"].update(track=3), "the fingerprint is of another track"),
+        )
+        for name, change, message in cases:
+            with self.subTest(name=name):
+                altered = json.loads(json.dumps(manifest))
+                change(altered["disc"]["audio"][0])
+                broken.write_text(json.dumps(altered))
+                code, _, err = run("check", "--input", str(copy), "--manifest", str(broken))
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+
 
 class ReadOffsetTests(unittest.TestCase):
     """A stand-in cdrdao dump: one BIN whose audio a drive with a read offset has moved."""
@@ -290,6 +308,17 @@ class ReadOffsetTests(unittest.TestCase):
         self.assertEqual(found["audio"][1]["fingerprintProblem"]["reason"], "unread")  # type: ignore[index]
         self.assertIsNotNone(found["audio"][0]["fingerprint"])  # type: ignore[index]
 
+    def test_a_copy_equal_only_with_unread_central_samples_is_not_identified(self) -> None:
+        sheet, unread = cdda.correct_read_offset(self.dump(4000), 4000, self.dir / "fixed", silent_log)
+        manifest = derive(read_cue(sheet), self.dir / "out", "Game", [], BUILTIN_PROFILES["any"], silent_log, {}, unread)
+        copy = read_cue(sheet)
+        report = check_against_manifest(copy, fingerprint(copy), manifest)
+        last = report["audio"][1]  # type: ignore[index]
+        self.assertEqual(last["status"], "not-fingerprinted")
+        self.assertIn(f"every sample equals the manifest's, but its samples {120 * SAMPLES - 4000} to {120 * SAMPLES}", last["detail"])
+        self.assertNotIn("differ", last["detail"])
+        self.assertFalse(report["identified"])
+
     def test_a_negative_offset_fills_the_first_pregap(self) -> None:
         sheet, unread = cdda.correct_read_offset(self.dump(-1164), -1164, self.dir / "fixed", silent_log)
         self.assertEqual(unread, {2: [[-150 * SAMPLES, -150 * SAMPLES + 1164]]})
@@ -322,6 +351,18 @@ class ReadOffsetTests(unittest.TestCase):
                     archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", backend=backend, read_offset=6)
         with self.assertRaisesRegex(DiscError, "only corrected for the cdrdao backend"):
             archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, image=self.dump(0), read_offset=6)
+        self.assertFalse((self.dir / "out").exists())
+
+    def test_an_offset_out_of_range_is_refused_before_the_disc_is_read(self) -> None:
+        with self.assertRaisesRegex(DiscError, "past the"):
+            archive(
+                output=self.dir / "out",
+                profile=BUILTIN_PROFILES["any"],
+                log=silent_log,
+                drive="E:",
+                backend="cdrdao",
+                read_offset=cdda.MAXIMUM_READ_OFFSET + 1,
+            )
         self.assertFalse((self.dir / "out").exists())
 
     def test_audio_hashes_are_sha256_of_the_samples(self) -> None:

@@ -126,6 +126,33 @@ def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[
     return sheet
 
 
+# redumper b756 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
+# (``drive_config_string`` in ``drive.ixx``), and, before that, warns when its database has no
+# read offset for the drive, in which case it reads with offset 0 (``drive_get_config``).
+_REDUMPER_CONFIGURATION = re.compile(r"^\s*configuration: .*\(read offset: ([+-]?\d+),", re.MULTILINE)
+_REDUMPER_OFFSET_UNKNOWN = "warning: drive read offset not found in the database"
+
+
+def redumper_read_offset(log_text: str, extra: Sequence[str] = ()) -> tuple[bool | None, int | None]:
+    """Read from redumper's log whether it corrected the drive's read offset, and by how much.
+
+    Returns ``(corrected, offset)``. The last ``configuration:`` line of the log gives the offset
+    redumper read with. When the warnings logged since the configuration line before it say the
+    drive's offset is not in redumper's database and ``extra`` gives no ``--drive-read-offset``,
+    redumper read with offset 0 without knowing the drive's: ``(False, None)``. A log without a
+    configuration line gives ``(None, None)``, since nothing says what redumper did.
+    """
+    matches = list(_REDUMPER_CONFIGURATION.finditer(log_text))
+    if not matches:
+        return None, None
+    last = matches[-1]
+    run = log_text[matches[-2].end() if len(matches) > 1 else 0 : last.start()]
+    overridden = any(a == "--drive-read-offset" or a.startswith("--drive-read-offset=") for a in extra)
+    if _REDUMPER_OFFSET_UNKNOWN in run and not overridden:
+        return False, None
+    return True, int(last.group(1))
+
+
 def _cdrdao(drive: str, directory: Path, name: str, log: Log, extra: Sequence[str]) -> Path:
     cdrdao, toc2cue = tools.require_tool("cdrdao"), tools.require_tool("toc2cue")
     # --read-raw keeps data sectors at 2,352 bytes. Driver option 0x20000 writes audio samples

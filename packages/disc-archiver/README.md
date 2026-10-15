@@ -265,9 +265,13 @@ My Game/
     pregap, that the dump holds as zero fill because no read reached them (see
     [Read offsets](#read-offsets)). `[]` when every sample was read.
 - `source`: where the disc came from. For a drive, the backend and `dump`, the cue sheet the formats
-  were written from. `readOffsetCorrected` is true for redumper and for cdrdao with
-  `--read-offset`, false for cdrdao without it, and null for an image (whose offset the archiver
-  cannot know) or the data track copy (which reads no audio). `readOffset` is the value given.
+  were written from. `readOffsetCorrected` says whether the audio was corrected by the drive's
+  read offset and `readOffset` gives the offset applied. For redumper both come from its log: the
+  offset its `configuration:` line shows, or false and null when redumper warned that its database
+  has no offset for the drive and no `--backend-arg=--drive-read-offset=<offset>` was given, since
+  it then reads with offset 0. Both are null when the log does not say. cdrdao is corrected with
+  `--read-offset`, recording the value given, and false and null without it. Both are null for an
+  image (whose offset the archiver cannot know) or the data track copy (which reads no audio).
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, so you can check your dump against them yourself), what the
@@ -325,7 +329,7 @@ JSON report:
 | `wrong-length` | The track's length differs from the manifest's by more than the tolerance. |
 | `unreadable` | Samples the check needs lie past the end of the copy, or in a track it holds without raw sectors. |
 | `missing` | The copy holds no audio track with that number, as an ISO does not. |
-| `not-fingerprinted` | The samples differ, and the manifest records no fingerprint for the track; `detail` says why. |
+| `not-fingerprinted` | The samples differ, or equal the manifest's only with samples it lists as unread, and the manifest records no fingerprint for the track; `detail` says why. |
 
 `manifest.identified` is true, and the exit code `0`, when the data track and the track list match
 and every audio track is `matched` or `matched-shifted`. Otherwise the exit code is `3`.

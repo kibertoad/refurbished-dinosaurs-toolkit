@@ -79,6 +79,9 @@ checked, and the same on every machine it is kept on.
    and corrects the drive's read offset only when given it with `--read-offset`; the manifest's
    `source.readOffsetCorrected` says which. redumper must know the drive's read offset; a drive
    it lists as supported is best ([redumper's drive list](https://github.com/superg/redumper)).
+   When its database has no offset for the drive, redumper reads with offset 0 and the manifest
+   records `readOffsetCorrected` false; dump again with
+   `--backend-arg=--drive-read-offset=<offset>`, taking the offset from AccurateRip's drive list.
 2. **Read redumper's log.** In `archival/<name>.log`, look for C2 errors and sectors that stayed
    unreadable after the retries. Clean the disc and dump again with `--backend-arg=--retries=20`
    before trusting a dump that has them.
