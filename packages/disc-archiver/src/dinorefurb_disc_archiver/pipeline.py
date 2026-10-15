@@ -22,16 +22,23 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
+import xxhash
+
 from . import ccd, isofs, redump, tools
 from .cue import read_cue, read_iso
 from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
-from .formats import FORMATS, FormatUnavailable, Output, track_file_name, write_format
+from .formats import FORMATS, FormatUnavailable, Output, cdda_name, track_file_name, write_format
 from .notice import NOTICE_FILENAME, write_notice
 from .profile import Profile, check_profile, recommended_formats
 from .tools import Log
 
 MANIFEST_NAME = "rip-manifest.json"
 MANIFEST_VERSION = 1
+# What each audio hash covers, written into the manifest beside the hashes.
+AUDIO_RANGE = (
+    "raw 2352-byte sectors from INDEX 01 up to the next track's INDEX 00, or to the lead-out for the "
+    "last track, with no header; first and stop are disc LBAs with track 1's INDEX 01 at 0"
+)
 SOURCE_SUFFIXES = (".cue", ".iso", ".ccd", ".chd")
 _UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -93,22 +100,24 @@ def _sha256(chunks: Iterable[bytes]) -> tuple[str, int]:
 
 
 def _data_fingerprint(track: Track) -> dict[str, object]:
-    user = hashlib.sha256()
+    user = isofs.HashingWriter()
     if track.storage != "raw":
         for chunk in track.iter_user_data():
-            user.update(chunk)
+            user.write(chunk)
         return {
             "track": track.number,
             "sectors": track.length,
-            "sha256": user.hexdigest(),
+            "sha256": user.sha256.hexdigest(),
+            "xxh3": user.xxh3.hexdigest(),
             "emptyForm2Sectors": [],
             "nonDataSectors": [],
             "nonDataSha256": None,
+            "nonDataXxh3": None,
         }
     # Only sectors past the declared volume may hold no user data: inside it, such a sector is a
     # BIN that does not match its sheet, or a damaged dump.
     volume_end = isofs.volume_sectors(track)
-    raw = hashlib.sha256()
+    raw = isofs.HashingWriter()
     empty: list[list[int]] = []
     ranges: list[list[int]] = []
     index = 0
@@ -121,20 +130,22 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
             except NotDataSector:
                 if volume_end is None or index < volume_end:
                     raise
-                raw.update(sector)
+                raw.write(sector)
                 add_to_ranges(ranges, index)
             else:
-                user.update(data)
+                user.write(data)
                 if empty_form2:
                     add_to_ranges(empty, index)
             index += 1
     return {
         "track": track.number,
         "sectors": track.length,
-        "sha256": user.hexdigest(),
+        "sha256": user.sha256.hexdigest(),
+        "xxh3": user.xxh3.hexdigest(),
         "emptyForm2Sectors": empty,
         "nonDataSectors": ranges,
-        "nonDataSha256": raw.hexdigest() if ranges else None,
+        "nonDataSha256": raw.sha256.hexdigest() if ranges else None,
+        "nonDataXxh3": raw.xxh3.hexdigest() if ranges else None,
     }
 
 
@@ -143,8 +154,15 @@ def fingerprint(disc: Disc) -> dict[str, object]:
 
     The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
     from the sectors past the volume described below, with empty form 2 sectors read as zeros.
-    Each audio hash covers the track's raw samples from INDEX 01 to the next track's INDEX 00, the
-    range restorations fingerprint.
+    Each audio hash covers the track's raw samples from INDEX 01 to the next track's INDEX 00, or
+    to the lead-out for the last track: the range the toolkit's ``CueBinSheet.TrackExtent`` gives
+    and ``CddaWave`` and ``CddaTrackFingerprints`` read, and the bytes of the track's ``.cdda``
+    file in the ``game-dir`` format. ``first`` and ``stop`` give that range as disc LBAs with
+    track 1's INDEX 01 at 0, and ``audioRange`` says it in words.
+
+    Every content hash is given as SHA-256 (``sha256``, ``nonDataSha256``) and as XXH3-128
+    (``xxh3``, ``nonDataXxh3``), the hash the documentation standard uses, as 32 lower-case hex
+    digits in canonical byte order, as ``xxhsum -H2`` prints it.
 
     An empty MODE2 form 2 sector of a raw MODE2 track (see ``disc.is_empty_form2``), anywhere on
     the track, adds 2,048 zero bytes to ``data.sha256``: the block a MODE1 image of the disc and an
@@ -173,11 +191,23 @@ def fingerprint(disc: Disc) -> dict[str, object]:
         volume = isofs.volume_identifier(track)
     audio = []
     for track in disc.audio_tracks:
-        digest, size = _sha256(track.iter_raw(0, track.length))
+        digest = isofs.HashingWriter()
+        for chunk in track.iter_raw(0, track.length):
+            digest.write(chunk)
         silent = None
         if track.pregap and track.pregap_stored:
             silent = all(not any(chunk) for chunk in track.iter_raw(-track.pregap, 0))
-        audio.append({"track": track.number, "sectors": size // RAW_SECTOR, "sha256": digest, "pregapSilent": silent})
+        audio.append(
+            {
+                "track": track.number,
+                "sectors": digest.size // RAW_SECTOR,
+                "first": track.index1,
+                "stop": track.end,
+                "sha256": digest.sha256.hexdigest(),
+                "xxh3": digest.xxh3.hexdigest(),
+                "pregapSilent": silent,
+            }
+        )
     return {
         "layout": disc.layout,
         "volumeIdentifier": volume,
@@ -186,18 +216,20 @@ def fingerprint(disc: Disc) -> dict[str, object]:
             for t in disc.tracks
         ],
         "data": data,
+        "audioRange": AUDIO_RANGE,
         "audio": audio,
     }
 
 
 def file_hashes(path: Path, root: Path) -> dict[str, object]:
-    """Size, CRC32, MD5, SHA-1 and SHA-256 of one file: the hashes disc databases list."""
-    crc, md5, sha1, sha256 = 0, hashlib.md5(), hashlib.sha1(), hashlib.sha256()
+    """Size, CRC32, MD5, SHA-1 and SHA-256 of one file, the hashes disc databases list, and its
+    XXH3-128, the hash the documentation standard uses."""
+    crc, md5, sha1, sha256, xxh3 = 0, hashlib.md5(), hashlib.sha1(), hashlib.sha256(), xxhash.xxh3_128()
     size = 0
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
             crc = zlib.crc32(block, crc)
-            for digest in (md5, sha1, sha256):
+            for digest in (md5, sha1, sha256, xxh3):
                 digest.update(block)
             size += len(block)
     return {
@@ -207,6 +239,7 @@ def file_hashes(path: Path, root: Path) -> dict[str, object]:
         "md5": md5.hexdigest(),
         "sha1": sha1.hexdigest(),
         "sha256": sha256.hexdigest(),
+        "xxh3": xxh3.hexdigest(),
     }
 
 
@@ -330,7 +363,36 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
             missing = sorted({e.path for e in expected} - {e.path for e in written})
             changed = sorted(e.path for e in written if e not in expected)
             result.differences.append(f"the extracted files differ: missing {missing[:5]}, changed {changed[:5]}")
+    elif kind == "game-dir":
+        _verify_game_dir(output, disc, reference, result)
     return result
+
+
+def _verify_game_dir(output: Output, disc: Disc, reference: dict, result: Verification) -> None:  # type: ignore[type-arg]
+    """Compare every file under ``CD`` with the source's files and audio hashes, and the listing
+    with the files."""
+    result.compared.append("every file's path, size, SHA-256 and XXH3-128")
+    written = isofs.tree_entries(output.entry)
+    names = (cdda_name(disc.tracks[a["track"] - 1]) for a in reference["audio"])
+    tracks = {
+        name: isofs.FileEntry(name, a["sectors"] * RAW_SECTOR, a["sha256"], a["xxh3"])
+        for name, a in zip(names, reference["audio"], strict=True)
+    }
+    if tracks:
+        result.compared.append("each audio track's .cdda file with the audio hashes from INDEX 01")
+    expected = sorted([*isofs.walk(disc.first_data_track(), primary=True), *tracks.values()], key=lambda e: e.path)
+    if written != expected:
+        missing = sorted({e.path for e in expected} - {e.path for e in written})
+        changed = sorted(e.path for e in written if e not in expected)
+        result.differences.append(f"the written files differ: missing {missing[:5]}, changed {changed[:5]}")
+    result.compared.append("the listing with the written files")
+    found = sorted(
+        (f"CD:{e.path.removesuffix('.cdda')}" if e.path in tracks else f"CD:{e.path}", e.size, e.xxh3) for e in written
+    )
+    if found != sorted((str(f["path"]), f["size"], f["xxh3"]) for f in output.listing):
+        result.differences.append("the listing differs from the written files")
+    if any(a["pregapSilent"] is False for a in reference["audio"]):
+        result.not_compared.append("audio in pregaps, which the format does not hold")
 
 
 def profile_paths(profile: Profile, disc: Disc) -> list[str] | None:
@@ -377,11 +439,13 @@ def derive(
     data = reference["data"]
     admitted = data is not None and bool(data["nonDataSectors"] or data["emptyForm2Sectors"])  # type: ignore[index]
     paths = profile_paths(profile, disc)
-    if paths is None and disc.data_tracks and "files" in requested and admitted:
+    if paths is None and disc.data_tracks and requested & {"files", "game-dir"} and admitted:
         try:
-            isofs.walk(disc.first_data_track())
+            # Under the names the requested format writes, so a Joliet name that is not a safe
+            # file name does not stop a run that writes only game-dir's primary names.
+            isofs.walk(disc.first_data_track(), primary="files" not in requested)
         except isofs.UnsupportedFileSystem:
-            pass  # write_files makes the files format unavailable with this reason.
+            pass  # The files and game-dir writers make their format unavailable with this reason.
     checks = check_profile(profile, reference, paths)
     for check in checks:
         log(f"profile: {check.name}: expected {check.expected!r}, found {check.found!r} - {'ok' if check.matched else 'MISMATCH'}")
@@ -419,6 +483,7 @@ def derive(
                 "entry": output.entry.relative_to(root).as_posix(),
                 "files": [file_hashes(p, root) for p in output.files],
                 "notes": output.notes,
+                **({"listing": output.listing} if identifier == "game-dir" else {}),
                 "verification": verification.as_json(),
             }
         )
