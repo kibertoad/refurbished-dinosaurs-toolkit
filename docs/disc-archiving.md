@@ -44,6 +44,7 @@ Recommend what the importer reads:
 | Mixed-mode, importer reads the toolkit's `OriginalContentSource` or another one-file cue/bin reader | `bincue` |
 | Data-only, importer reads ISO files | `iso` |
 | Data-only, importer reads a directory only | `files`, then `iso` once ISO import exists |
+| Importer reads a build laid out in `GAME_DIR/<build ID>/CD` | `game-dir` |
 
 Prefer `bincue` for any disc with audio: it is the most complete format most readers accept, and
 an ISO loses the audio.
@@ -65,9 +66,11 @@ turn. Every `matched` and `partial` form must identify as the same edition, and 
 import or fail with the importer's precise unsupported-source message. A format the importer
 should accept and does not is an import gap. Record it in the restoration's plan, not here.
 
-The manifest's `disc` hashes are the format-independent content hashes, but they are SHA-256, and
-the documentation standard makes every hash in a build entry XXH3-128. A restoration cannot
-compare its build entry's `xxh3` with the manifest; see [Hashes](#hashes).
+The manifest's `disc` hashes are the format-independent content hashes. Each is given as
+XXH3-128 (`xxh3`), the hash the documentation standard uses in a build entry, as well as SHA-256;
+see [Hashes](#hashes). The `game-dir` format writes the disc's files and audio tracks in the
+standard's `GAME_DIR` layout, and its `listing` in the manifest gives each file's build entry
+path, size and `xxh3`, ready to copy into the build entry.
 
 ## Archiving a research disc
 
@@ -110,22 +113,27 @@ checked, and the same on every machine it is kept on.
 
 | Hash | Where | Used for |
 |---|---|---|
-| XXH3-128 (`xxh3`) | the documentation standard's build entries, restorations' asset manifests, the engine's and reader's source identity | Identifying an edition and every file it reads. `xxhsum -H2` prints it. |
+| XXH3-128 (`xxh3`) | the documentation standard's build entries, restorations' asset manifests, the engine's and reader's source identity; `rip-manifest.json` `disc` content hashes, each output file and the `game-dir` listing | Identifying an edition and every file it reads. `xxhsum -H2` prints it. |
 | SHA-256 | `rip-manifest.json` `disc` content hashes; each output file | Comparing formats with each other inside the archiver. |
 | CRC32, MD5, SHA-1 | each output file in `rip-manifest.json` | Comparing a dump with a Redump DAT, which lists these. |
 
 Identify a disc by its content (the data track's user data and each audio track's samples), never
 by the hash of a container file such as a `.chd` or a one-file `.bin`, which changes with the
-format and the program that wrote it. The archiver does not yet give content hashes as XXH3-128,
-so a restoration hashes the files it reads itself, the same way its build entry does.
+format and the program that wrote it. The manifest's `xxh3` content hashes are the values a
+build entry gives: the data track's files in the `game-dir` listing, and each audio track as
+`CD:trackNN` with `format: cdda`, hashed over its raw 2,352-byte sectors with no header.
+
+The standard does not say where an audio track's sectors start and stop. The archiver hashes
+each track from its INDEX 01 to the next track's INDEX 00, or to the lead-out for the last track,
+which leaves the pregap out. The manifest gives the range for each track as `first` and `stop`
+(disc LBAs with track 1's INDEX 01 at 0) and in words in `audioRange`. LegacyFormats reads the
+same range: `CueBinSheet.TrackExtent`, `CddaWave` and `CddaTrackFingerprints`.
 
 ## Known gaps
 
 [Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
 keeps a legally made copy from being identified as the same edition:
 
-- content hashes are SHA-256 only, not the `xxh3` a build entry gives, and no format writes the
-  standard's `GAME_DIR` layout (`CD/<path>`, `CD/trackNN.cdda`);
 - audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and most
   rips made with EAC, ImgBurn or Alcohol) reports `mismatched`;
 - Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
@@ -148,3 +156,4 @@ should accept and does not in the restoration's plan.
 | `iso-ogg` | user data | lossy | as a cue `PREGAP` | none |
 | `iso` | user data | no | no | none |
 | `files` | the file system's files | no | no | none |
+| `game-dir` | the file system's files | yes, from INDEX 01, as `.cdda` | no | none |

@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "kibertoad" }]
-dependencies = ["pycdlib==1.14.0"]
+dependencies = ["pycdlib==1.14.0", "xxhash==4.0.1"]
 
 [project.scripts]
 disc-archiver = "dinorefurb_disc_archiver.cli:run"
