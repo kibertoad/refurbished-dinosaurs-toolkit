@@ -1301,9 +1301,12 @@ names it.
 
 The `noReturn` return check reads past the stops. When the query has stops, the check reads the
 reached declared routines and the targets of declared calls with a walk of its own that has none,
-so code a stop hides from the query can still contradict a declaration. That walk has the same
-`instructionLimit`, and stopping at it sets `instructionLimitReached`. `returnCheckGaps` lists
-what that walk could not read and the query's walk did not record: its gap rows, which include its
+so code a stop hides from the query can still contradict a declaration. That walk steps over every
+call at its return site after resolving its target, so a call to a declared routine or a declared
+call still ends its branch, and no callee is decoded: only the routines' own paths spend its
+`instructionLimit`, the same limit as the query's, and stopping at it sets
+`instructionLimitReached`. `returnCheckGaps` lists
+what that walk could not read on those paths and the query's walk did not record: its gap rows, which include its
 unresolved transfers, and its contested instructions, each as `{ "site", "reason" }`. A
 declaration the check could not read in full is not checked there, so any row keeps
 `negativeUsable` false, as a gap of the query's walk does. Without stops, or when the walk met
@@ -1480,7 +1483,9 @@ its `targets` with whether the return check `read` each and its `returnSites`, `
 `targets`, as in `reach`, even when the raw scan finds a candidate there); an interrupt row gives its
 `vector`, `reached`, `following` and `followingRead`. The entry-path walk ends a branch at every
 interrupt, so the return check reads the declared routines with a walk of its own that starts at
-them and continues past every interrupt except a declared one, as `reach` does. The targets of the
+them and continues past every interrupt except a declared one, as `reach` does. That walk steps
+over every call at its return site after resolving its target, so a call to a declared routine or
+a declared call still ends its branch, and no callee is decoded or spends its limit. The targets of the
 declared call sites get a second walk of the same kind, so their code cannot change what the
 first one reads.
 A routine that ends in an interrupt that returns is then contradicted by what follows it, unless

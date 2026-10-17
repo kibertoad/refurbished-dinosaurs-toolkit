@@ -604,15 +604,16 @@ class StopTests(unittest.TestCase):
                 self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([7], True))
                 self.assertTrue(r["noReturn"][0]["read"])
                 self.assertFalse(r["negativeUsable"])
-        # The check has the walk's instruction limit. Here R spins after its call to S at 0009, so the walk
-        # reads only the call into R and R's call to S, and the check, which reads S too, stops before its end.
-        data = bytes.fromhex("e80100" "c3" "e80200" "ebfe" "9090c3")
-        stop = [{"routine": 9, "reason": CUT}]
+        # The check has the walk's instruction limit, spent on the routine's own paths. The call to the
+        # stop routine S ends the query's branch, so R's three instructions past it and its spin are read
+        # by the check alone, and a limit of three stops the check there.
+        data = bytes.fromhex("e80100" "c3" "e80500" "909090" "ebfe" "c3")
+        stop = [{"routine": 0x0C, "reason": CUT}]
         r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, stops=stop), "reach")
         self.assertEqual((r["noReturn"][0]["contradicted"], r["instructionLimitReached"], r["negativeUsable"]),
                          (False, False, True))
         r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, stops=stop,
-                                    instructionLimit=2), "reach")
+                                    instructionLimit=3), "reach")
         self.assertEqual(r["counts"]["instructions"], 2)
         self.assertTrue(r["instructionLimitReached"])
         self.assertFalse(r["negativeUsable"])
@@ -630,6 +631,57 @@ class StopTests(unittest.TestCase):
         self.assertEqual((r["unresolved"], r["gaps"], r["noReturn"][0]["contradicted"]), ([], [], False))
         self.assertEqual([row["site"] for row in r["returnCheckGaps"]], [5])
         self.assertFalse(r["negativeUsable"])
+
+    def test_the_no_return_check_reads_only_the_routines_own_paths(self):
+        # 0000 call R at 0004; 0003 ret. R calls the stop routine S at 000B and spins at 0007. S holds
+        # a computed jump nothing resolves, so a check that entered it would gain a returnCheckGaps row.
+        data = bytes.fromhex("e80100" "c3" "e80400" "ebfe" "9090" "90" "ffe0" "c3")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"}]
+        stops = [{"routine": 0x0B, "reason": CUT}]
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, stops=stops), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["returnSites"], row["contradicted"], row["read"]), ([], False, True))
+        self.assertEqual(r["returnCheckGaps"], [])
+        self.assertFalse(r["instructionLimitReached"])
+        self.assertTrue(r["negativeUsable"])
+        # A return on the routine's own path past the stepped-over call still contradicts the declaration.
+        returning = bytes.fromhex("e80100" "c3" "e80400" "c3" "909090" "90" "ffe0" "c3")
+        r = run_report(returning, config(returning, targets=[3], controls=[0], noReturn=no_return, stops=stops),
+                       "reach")
+        self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([7], True))
+        self.assertEqual(r["returnCheckGaps"], [])
+        # A call to its own next instruction keeps its return site on the routine's path. The two arms
+        # of the branch at 0000 call the stop routine S at 000A and the declared routine R at 000B.
+        self_call = bytes.fromhex("7503" "e80500" "e80300" "c3" "90" "c3" "e80000" "c3")
+        r = run_report(self_call, config(self_call, targets=[8], controls=[2, 5],
+                                         noReturn=[{"routine": 0x0B, "reason": "synthetic: declared to end the program"}],
+                                         stops=[{"routine": 0x0A, "reason": CUT}]), "reach")
+        self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([0x0E], True))
+
+    def test_a_call_to_another_declared_routine_still_ends_the_checks_branch(self):
+        # The two arms of the branch at 0000 call the stop routine S at 000A and R1 at 000B. R1 calls
+        # R2 at 000F, both declared, with a return instruction after the call that is on no path of
+        # R1's own.
+        data = bytes.fromhex("7503" "e80500" "e80300" "c3" "90" "c3" "e80100" "c3" "ebfe")
+        no_return = [{"routine": 0x0B, "reason": "synthetic: declared to end the program"},
+                     {"routine": 0x0F, "reason": "synthetic: declared to end the program"}]
+        r = run_report(data, config(data, targets=[8], controls=[2, 5], noReturn=no_return,
+                                    stops=[{"routine": 0x0A, "reason": CUT}]), "reach")
+        self.assertEqual([(row["returnSites"], row["contradicted"]) for row in r["noReturn"]],
+                         [([], False), ([], False)])
+        self.assertEqual(r["returnCheckGaps"], [])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_the_no_return_checks_callees_do_not_spend_the_instruction_limit(self):
+        # R's callee at 000B holds nine instructions; a check that entered it would trip a limit of
+        # six, where R's own path holds two.
+        data = bytes.fromhex("e80100" "c3" "e80400" "ebfe" "9090" + "90" * 8 + "c3")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"}]
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return,
+                                    stops=[{"routine": 0x0B, "reason": CUT}], instructionLimit=6), "reach")
+        self.assertFalse(r["instructionLimitReached"])
+        self.assertFalse(r["noReturn"][0]["contradicted"])
+        self.assertTrue(r["negativeUsable"])
 
     def test_rejected_stops(self):
         site = {"site": 3, "reason": CUT}

@@ -1046,10 +1046,12 @@ def reach(image, config):
                 or any(at in seen or at in contested or at in overlapping for at in stop_sites))
     if stop_met and checked:
         # A stop cuts the query and says nothing about the build, so the return check reads the reached
-        # declared routines without the stops: code a stop hid can still contradict a declaration.
+        # declared routines without the stops: code a stop hid can still contradict a declaration. It
+        # steps over calls with their targets resolved, so only the routines' own paths are decoded
+        # and spend the instruction limit; returns_from skips call edges either way.
         read, check_gaps, _, _, check_contested = walk(image, sorted(at for at in checked if at in distance),
                                                        instruction_limit, follow_interrupts=True,
-                                                       stops=frozenset(leaves), **declared)
+                                                       stops=frozenset(leaves), resolve_over_calls=True, **declared)
         check_stopped = any(g["reason"] == LIMIT_REASON for g in check_gaps)
         # What the check could not read past a stop leaves its declarations unchecked there, as a gap of the
         # query's own walk would; the rows the query's walk already holds are not repeated.
@@ -1059,7 +1061,8 @@ def reach(image, config):
              and g["site"] not in check_contested]
             + [{"site": at, "reason": CHECK_CONTESTED} for at in check_contested if at not in contested],
             key=lambda g: (g["site"], g["reason"]))
-        check_graph = successor_graph(image, read, kept=frozenset(leaves), follow_interrupts=True, **declared)
+        check_graph = successor_graph(image, read, kept=frozenset(leaves), follow_interrupts=True,
+                                      resolve_over_calls=True, **declared)
     returns = {at: returns_from(check_graph, read, returning_leaves, at) for at in checked}
     no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, ended_sites, seen, distance, read,
                                no_return_sites, site_targets)
@@ -1157,9 +1160,11 @@ def reach(image, config):
                               "A stop narrows the question and claims nothing about the build: the walk reads no "
                               "further at a stop site, nor into a stop routine or past a call to it, so a target "
                               "reached only past a stop is not reached, and negativeUsable answers the narrowed "
-                              "question. The noReturn return check reads past the stops, with a walk of its own, and "
-                              "returnCheckGaps lists what that walk could not read that the query's walk did not "
-                              "record; any row keeps negativeUsable false, as a gap would. "
+                              "question. The noReturn return check reads past the stops, with a walk of its own that "
+                              "steps over calls at their return sites after resolving their targets, so it decodes "
+                              "only the declared routines' own paths; returnCheckGaps lists what that walk could not "
+                              "read on those paths that the query's walk did not record, and any row keeps "
+                              "negativeUsable false, as a gap would. "
                               "decodedRanges, when asked for, covers the instructions the walk decoded; no range "
                               "starts at a leaf, a stop routine or a contested, unresolved overlapping or undecodable start, though "
                               "one can lie inside a decoded instruction. A site inside a range lies in a decoded "
