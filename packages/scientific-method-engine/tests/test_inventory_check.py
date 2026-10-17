@@ -431,6 +431,22 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertIn("The walk that checks the noReturn routines stopped at its instruction limit", stopped["summary"])
         self.assertFalse(r["noReturnCheckLimitReached"])
 
+    def test_the_no_return_check_reads_only_the_routines_own_paths(self):
+        # 0000 ret is the whole entry path. The declared routine at 0001 calls 0008, whose seven
+        # instructions a check that entered them would spend a limit of four on; its own path holds two.
+        data = bytes.fromhex("c3" "e80400" "ebfe" "9090" + "90" * 6 + "c3")
+        inventory = "start\tsize\n1000:0000\t1\n1000:0001\t7\n1000:0008\t7\n"
+        exit_routine = [{"routine": 1, "reason": "synthetic exit"}]
+        r = self.check(inventory, data=data, noReturn=exit_routine, instructionLimit=4)
+        self.assertFalse(r["noReturnCheckLimitReached"])
+        row = r["noReturn"][0]
+        self.assertEqual((row["returnSites"], row["contradicted"], row["read"], row["reached"]), ([], False, True, False))
+        # A return on the routine's own path past the stepped-over call still contradicts the declaration.
+        returning = bytes.fromhex("c3" "e80400" "c3" "909090" + "90" * 6 + "c3")
+        r = self.check(inventory, data=returning, noReturn=exit_routine, instructionLimit=4)
+        self.assertFalse(r["noReturnCheckLimitReached"])
+        self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([4], True))
+
     def test_a_contested_instruction_holds_no_target(self):
         # Entries 0 and 1 overlap, so the call at 0003 is contested. The raw call at 000D targets 0004, a byte of
         # that contested call, and names no holder, since only established instructions count.
