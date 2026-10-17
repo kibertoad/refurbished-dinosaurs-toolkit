@@ -136,8 +136,9 @@ def rip(backend: Backend, drive: str, directory: Path, name: str, log: Log, extr
 
 def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[str]) -> Dump:
     program = tools.require_tool("redumper")
-    # With no mode, redumper runs its whole disc sequence: dump, protection, refine, split, hash
-    # and info. Split writes the Redump cue sheet and one .bin per track.
+    # With no mode, redumper runs its whole disc sequence: dump, dump::extra (the lead-in and
+    # lead-out reads its drive type supports), protection, refine, dvdkey, split, hash and info.
+    # Split writes the Redump cue sheet and one .bin per track.
     # redumper runs in ``directory``, so a relative image path would point below it again.
     image = [f"--image-path={directory.absolute()}", f"--image-name={name}"]
     command = [program, f"--drive={drive}", *image, *redumper_detect_arguments(extra), *extra]
@@ -244,7 +245,7 @@ def _log_outcome(log: Log, result: str, facts: dataerrors.Facts) -> None:
     log("Clean the disc and copy it again, or copy it in another drive.")
 
 
-# redumper b761 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
+# redumper b767 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
 # (``drive_config_string`` in ``drive.ixx``), and, before that, warns when its database has no
 # read offset for the drive, in which case it reads with offset 0 (``drive_get_config``).
 _REDUMPER_CONFIGURATION = re.compile(r"^\s*configuration: .*\(read offset: ([+-]?\d+),", re.MULTILINE)
@@ -270,7 +271,7 @@ def redumper_read_offset(log_text: str, extra: Sequence[str] = ()) -> tuple[bool
     return True, int(last.group(1))
 
 
-# redumper b761 logs its command line after the program name; a refine run's starts with "refine".
+# redumper b767 logs its command line after the program name; a refine run's starts with "refine".
 _REDUMPER_REFINE_RUN = re.compile(r"^arguments: refine\b", re.MULTILINE)
 _REDUMPER_INQUIRY = re.compile(r"^\s*inquiry: (.+?) - (.+?) \(revision level: (.*?), vendor specific: ", re.MULTILINE)
 _REDUMPER_CONFIGURATION_FIELDS = re.compile(
@@ -298,7 +299,7 @@ _REDUMPER_ARGUMENTS = re.compile(r"^arguments: (.*)$", re.MULTILINE)
 _REDUMPER_LBA_LIMIT = re.compile(r"--lba-(start|end)(?:=|\s+)(-?\d+)")
 
 SECTOR_ORDERS = ("DATA_C2_SUB", "DATA_SUB_C2", "DATA_SUB", "DATA_C2")
-"""The sector orders redumper b761 accepts for ``--drive-sector-order``, generic default first."""
+"""The sector orders redumper b767 accepts for ``--drive-sector-order``, generic default first."""
 
 # A dump read in the drive's own sector order has a valid subchannel Q in nearly every sector:
 # a pressed disc rarely fails more than a few percent, even when scratched. A drive whose data,
@@ -650,7 +651,7 @@ def _cdrdao(drive: str, directory: Path, name: str, log: Log, extra: Sequence[st
     return directory / f"{name}.cue"
 
 
-# redumper b761 throws "unable to open drive (<path>, SYSTEM: <error>)" when it cannot open the
+# redumper b767 throws "unable to open drive (<path>, SYSTEM: <error>)" when it cannot open the
 # drive (``scsi/sptd.ixx``), which its log records as an error line.
 _REDUMPER_DRIVE_NOT_OPENED = "unable to open drive"
 

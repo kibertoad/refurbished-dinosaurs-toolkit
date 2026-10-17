@@ -352,9 +352,9 @@ def redumper_log(
     extra_lines: tuple[str, ...] = (),
     warning: str | None = None,
 ) -> str:
-    """One run of a redumper b761 log, in the format its ``disc`` command writes.
+    """One run of a redumper b767 log, in the format its ``disc`` command writes.
 
-    The lines follow b761's ``logger.ixx``, ``redumper.ixx``, ``drive.ixx``, ``drive/detect.ixx``,
+    The lines follow b767's ``logger.ixx``, ``redumper.ixx``, ``drive.ixx``, ``drive/detect.ixx``,
     ``cd/toc.ixx``, ``cd/cd_dump.ixx`` and ``cd/cd_split.ixx``. The drive is a stand-in, not a real
     model. ``detected_order`` adds the ``drive::detect`` line that ``--auto-detect`` writes, ``dumped``
     the dump's error totals, ``write_offset`` split's disc write offset, ``data_error_sectors`` split
@@ -362,7 +362,7 @@ def redumper_log(
     lists each session's first LBA and lead-out (one data track each), in place of one session from
     0 to ``lead_out``. ``warning`` replaces the database warning a drive the database lacks gets.
     """
-    lines = ["=== 2026-01-02 03:04:05 " + "=" * 56, "redumper (build: b761)", "", f"arguments: {arguments}"]
+    lines = ["=== 2026-01-02 03:04:05 " + "=" * 56, "redumper (build: b767)", "", f"arguments: {arguments}"]
     if not in_database:
         lines += [warning or "warning: drive not found in the database", "warning: using generic drive"]
     lines += [
@@ -418,9 +418,9 @@ def redumper_analysis_steps(
     info: bool = True,
     securom: str | None = "unknown",
 ) -> list[str]:
-    """The protection, split, hash and info steps of a redumper b761 disc run, after its dump.
+    """The protection, split, hash and info steps of a redumper b767 disc run, after its dump.
 
-    The lines follow b761's ``cd/protection.ixx``, ``cd/cd_split.ixx``, ``cd/cd_common.ixx``,
+    The lines follow b767's ``cd/protection.ixx``, ``cd/cd_split.ixx``, ``cd/cd_common.ixx``,
     ``info.ixx``, ``systems/s_cdrom.ixx`` and ``systems/securom.ixx``, with made-up values.
     ``protection`` is one protection or several; ``offsets`` the offset configuration's records as
     (position, header LBA, count, offset); ``info`` adds the hash and info steps; ``securom`` the

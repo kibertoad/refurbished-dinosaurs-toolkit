@@ -55,7 +55,7 @@ _SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 def runs(log_text: str) -> list[str]:
     """A redumper log split into the parts its runs wrote, oldest first.
 
-    redumper b761 starts each run's part with "=== <date> <time> ====..." (``logger.ixx``) and
+    redumper b767 starts each run's part with "=== <date> <time> ====..." (``logger.ixx``) and
     appends to a log it finds, so a log can hold several runs. A log without run headers is taken
     as one run.
     """

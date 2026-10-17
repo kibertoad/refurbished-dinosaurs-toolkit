@@ -388,7 +388,7 @@ class ProgramBackendTests(unittest.TestCase):
 
 
 class RedumperReadOffsetTests(unittest.TestCase):
-    # The lines redumper b761 logs: drive_config_string and the warnings of drive_get_config.
+    # The lines redumper b767 logs: drive_config_string and the warnings of drive_get_config.
     CONFIGURATION = "  configuration: GENERIC (read offset: {}, C2 shift: 0, pre-gap start: -135, read method: BE, sector order: DATA_C2_SUB)\n"
     UNKNOWN = "warning: drive read offset not found in the database\nwarning: drive not found in the database\n"
 
@@ -458,7 +458,7 @@ class RedumperDriveTests(unittest.TestCase):
 
     def test_the_last_run_that_read_a_drive_counts(self) -> None:
         earlier = redumper_log(in_database=False, q_errors=1000)
-        split_only = "=== 2026-01-02 05:00:00 " + "=" * 56 + "\nredumper (build: b761)\n\narguments: split --image-name=Game\n"
+        split_only = "=== 2026-01-02 05:00:00 " + "=" * 56 + "\nredumper (build: b767)\n\narguments: split --image-name=Game\n"
         text = earlier + redumper_log(q_errors=3) + split_only
         drive = backends.redumper_drive(text)
         assert drive is not None
@@ -667,7 +667,7 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
         split = "\n".join(
             [
                 "=== 2026-01-02 05:00:00 " + "=" * 56,
-                "redumper (build: b761)",
+                "redumper (build: b767)",
                 "",
                 "arguments: split --image-name=Game --force-split",
                 *redumper_analysis_steps(info=False)[5:],
