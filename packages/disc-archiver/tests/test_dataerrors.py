@@ -132,7 +132,7 @@ class LogTests(unittest.TestCase):
         self.assertIsNone(dataerrors.data_tracks(MIXED_MODE_LOG + redumper_log(dumped=False).split("*** DUMP")[0]))
 
 
-# A data track then an audio track with a pre-gap, in the layout of b761's ``TOC::print``.
+# A data track then an audio track with a pre-gap, in the layout of b767's ``TOC::print``.
 MIXED_MODE_LOG = (
     "=== 2026-01-02 03:04:05 " + "=" * 56 + "\n"
     "disc TOC:\n"
