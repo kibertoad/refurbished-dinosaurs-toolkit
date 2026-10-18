@@ -1,6 +1,6 @@
 // Walking the repository's directories, and reading the test files a row or deviation lists.
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Context } from "./context.ts";
 
@@ -22,8 +22,17 @@ export function readUtf8(file: string) {
   return text;
 }
 
-/** Drops the cached text of a file the run writes or removes, so the next read sees the disk. */
+/** Writes text to a file as UTF-8 and keeps it as the file's text, so a later read sees the new copy. */
+export function writeUtf8(file: string, text: string) {
+  writeFileSync(file, text);
+  texts.set(file, text);
+}
+
+/** Drops the cached text of a file the run removes, so a later read sees the disk. */
 export const forgetText = (file: string) => texts.delete(file);
+
+// Build output, dependencies and .git, which walk skips.
+const SKIPPED = new Set(["bin", "obj", "dist", "node_modules", ".git", "artifacts"]);
 
 /**
  * Calls fn with every file under dir, depth first in directory order, skipping build output,
@@ -32,7 +41,7 @@ export const forgetText = (file: string) => texts.delete(file);
 export function walk(dir: string, fn: (path: string) => void) {
   if (!existsSync(dir)) return;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (["bin", "obj", "dist", "node_modules", ".git", "artifacts"].includes(entry.name)) continue;
+    if (SKIPPED.has(entry.name)) continue;
     const p = join(dir, entry.name);
     // A link is followed, as statSync does; any other entry's type comes with the listing.
     if (entry.isSymbolicLink() ? statSync(p).isDirectory() : entry.isDirectory()) walk(p, fn);
@@ -80,7 +89,7 @@ export function checkTestFiles(ctx: Context, file: string, id: string, cell: str
     if (!existsSync(p)) problem(file, `${id}: test file ${tf} does not exist`);
     else if (!statSync(p).isFile()) problem(file, `${id}: test file ${tf} is not a file`);
     else {
-      const text = readFileSync(p, "utf8");
+      const text = readUtf8(p);
       if (!mention.test(text)) problem(file, `${id}: test file ${tf} does not mention ${id}`);
       if (text.includes("GAME_DIR") && !needsGame)
         problem(file, `${id}: test file ${tf} mentions GAME_DIR, but it has to run in CI`);

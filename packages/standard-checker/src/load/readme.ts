@@ -1,16 +1,14 @@
 // spec/README.md: its sections and the area list.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { LoadContext } from "../context.ts";
-import { splitSections, tables } from "../markdown.ts";
+import { readText, splitSections, tables } from "../markdown.ts";
 
 /** Checks spec/README.md and returns its areas, in the order it lists them. */
 export function loadAreas({ config, problem }: LoadContext): string[] {
   const { specDir } = config;
-  const readme = existsSync(join(specDir, "README.md"))
-    ? readFileSync(join(specDir, "README.md"), "utf8").replace(/\r\n/g, "\n")
-    : "";
+  const readme = existsSync(join(specDir, "README.md")) ? readText(join(specDir, "README.md")) : "";
   if (!readme) problem(null, "spec/README.md is missing");
   const areas: string[] = [];
   const readmeSections = splitSections(readme);

@@ -2,11 +2,11 @@
 // --scheduled-generation reporting a change to them, and the line limit of every Markdown file the
 // standard defines.
 
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { baseTarget, gitIn, revParse } from "../checks/base.ts";
 import type { Context } from "../context.ts";
-import { forgetText, markdownTree, toSlash, walk } from "../files.ts";
+import { forgetText, markdownTree, toSlash, walk, writeUtf8 } from "../files.ts";
 import { lineCount, readText } from "../markdown.ts";
 import { LINE_LIMIT, VALIDATION_DIR } from "../standard.ts";
 
@@ -36,8 +36,7 @@ export function writeGenerated(ctx: Context, generated: Map<string, string>) {
   } else {
     for (const p of stale) {
       mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, generated.get(p)!);
-      forgetText(p);
+      writeUtf8(p, generated.get(p)!);
       console.log(`wrote ${toSlash(relative(repoDir, p))}`);
     }
     for (const f of extra) {
