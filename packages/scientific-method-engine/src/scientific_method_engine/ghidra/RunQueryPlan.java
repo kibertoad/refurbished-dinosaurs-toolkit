@@ -34,6 +34,10 @@ public class RunQueryPlan extends GhidraScript {
         return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
+    private String resourceSha256(ResourceFile resource) throws Exception {
+        try (var stream = resource.getInputStream()) { return sha256(stream.readAllBytes()); }
+    }
+
     @Override
     protected void run() throws Exception {
         String[] args = getScriptArgs();
@@ -73,17 +77,23 @@ public class RunQueryPlan extends GhidraScript {
         report.put("language", currentProgram.getLanguageID().toString());
         report.put("compiler", currentProgram.getCompilerSpec().getCompilerSpecID().toString());
         report.put("status", "running");
+        ResourceFile runner = GhidraScriptUtil.findScriptByName("RunQueryPlan.java");
+        report.put("runnerSha256", resourceSha256(runner));
+        report.put("helperSha256", resourceSha256(new ResourceFile(runner.getParentFile(), "scientificmethod/QueryBatch.java")));
+        long modification = currentProgram.getModificationNumber();
+        report.put("modificationNumber", modification);
         Map<String, String> scripts = new LinkedHashMap<>();
         report.put("scripts", scripts);
         Path reportPath = destination.resolve("report.json");
         Files.writeString(reportPath, gson.toJson(report));
         List<QueryBatch.Result> results = QueryBatch.run(plan.audit, plan.queries, (query, output, error) -> {
             if (monitor.isCancelled()) throw new CancellationException();
+            if (currentProgram.getModificationNumber() != modification) {
+                throw new IllegalStateException("Program changed during batch; target not run.");
+            }
             ResourceFile scriptFile = GhidraScriptUtil.findScriptByName(query.script);
             if (scriptFile == null) throw new IllegalArgumentException("Script not found: " + query.script);
-            byte[] scriptBytes;
-            try (var stream = scriptFile.getInputStream()) { scriptBytes = stream.readAllBytes(); }
-            scripts.put(query.id, sha256(scriptBytes));
+            scripts.put(query.id, resourceSha256(scriptFile));
             PrintWriter out = new PrintWriter(output, true);
             PrintWriter err = new PrintWriter(error, true);
             GhidraScript script = GhidraScriptUtil.getProvider(scriptFile).getScriptInstance(scriptFile, err);
@@ -94,8 +104,10 @@ public class RunQueryPlan extends GhidraScript {
         });
         report.put("results", results);
         boolean sourceUnchanged = sourceHash.equals(sha256(Files.readAllBytes(source)));
-        boolean completed = sourceUnchanged && results.stream().allMatch(result -> result.status.equals("completed"));
+        boolean programUnchanged = currentProgram.getModificationNumber() == modification;
+        boolean completed = sourceUnchanged && programUnchanged && results.stream().allMatch(result -> result.status.equals("completed"));
         report.put("sourceUnchanged", sourceUnchanged);
+        report.put("programUnchanged", programUnchanged);
         report.put("status", completed ? "completed" : "incomplete");
         Files.writeString(reportPath, gson.toJson(report));
         if (!completed) throw new IllegalStateException("Query plan incomplete; inspect every target in " + reportPath);

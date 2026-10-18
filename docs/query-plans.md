@@ -50,13 +50,15 @@ not proof that mapped bytes, loader settings or flow overrides are correct. The
 required project-specific audit script must check those relationships and emit
 the audit's completion marker. Its failure prevents all target queries.
 
-`report.json` records the plan/source digests, Ghidra version, program path,
-language/compiler and each executed script's digest. Every target finishes as
+`report.json` records the plan/source/runner/helper digests, Ghidra version,
+program path and modification number, snapshot identity, language/compiler and
+each executed script's digest. Every target finishes as
 `completed`, `failed`, `limited`, `cancelled` or `not-run`. Stderr, a missed
 completion control, a rejection control or an exception fails that target;
 later targets still run. Audit failure or cancellation stops subsequent targets.
-The source is hashed again after execution. Any non-completed target or source
-change makes the batch incomplete and raises a script error. Check the JSON and
+The source is hashed again after execution. A changed program modification number
+prevents further script execution. Any non-completed target, program change or
+source change makes the batch incomplete and raises a script error. Check the JSON and
 the headless log: Ghidra's launcher exit code alone is not script acceptance.
 If the process is killed, a report left at `running` is incomplete; missing rows
 are unexecuted or unknown, never successful negatives. Preserve the plan with it.
