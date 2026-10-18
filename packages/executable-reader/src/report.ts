@@ -249,6 +249,13 @@ function unpackReport(bytes: Buffer, config: UnpackConfig, source: string, base:
 export const MAX_REPORT_MIB = 32;
 /** The prepared-config protocol this reader speaks. It must equal `scientific_method_engine.PREPARED_PROTOCOL`; the engine refuses any other number. */
 export const PREPARED_PROTOCOL = 3;
+/** How long, in seconds, {@link run} lets the engine run a command before it stops it with no report. */
+export const ENGINE_TIMEOUT_SECONDS = 120;
+/**
+ * How long, in seconds, {@link run} lets the engine run `scan-index`. A first build decodes every declared
+ * offset and writes the index, which takes about 90 seconds for 1 MiB of code on a desktop machine.
+ */
+export const SCAN_INDEX_TIMEOUT_SECONDS = 600;
 
 // Windows PowerShell 5.1 writes a UTF-8 byte order mark with `-Encoding utf8` and UTF-16 by default.
 // The engine's `_read_config_text` in cli.py applies the same rules with the same messages.
@@ -276,7 +283,8 @@ function readConfigText(file: string): string {
  * `imports`, `pointers`, `table`, `bodies` and `unpack` run in Node, and `unpack` also writes the unpacked
  * file its config names; every other command is prepared here and piped to
  * `python -m scientific_method_engine <command> -`, using `EVIDENCE_PYTHON` or `python`.
- * The engine gets 120 seconds and at most 32 MiB of output.
+ * The engine gets {@link ENGINE_TIMEOUT_SECONDS} seconds ({@link SCAN_INDEX_TIMEOUT_SECONDS} for `scan-index`)
+ * and at most 32 MiB of output.
  */
 export function run(args: string[]): Report {
   const [command, file, ...extra] = args;
@@ -316,12 +324,15 @@ export function run(args: string[]): Report {
   }
   const config = prepare(supplied, base);
   const python = process.env.EVIDENCE_PYTHON || "python";
+  const seconds = command === "scan-index" ? SCAN_INDEX_TIMEOUT_SECONDS : ENGINE_TIMEOUT_SECONDS;
   const child = spawnSync(python, ["-B", "-m", "scientific_method_engine", command, "-"], {
     input: JSON.stringify({ ...config, preparedProtocol: PREPARED_PROTOCOL }),
     encoding: "utf8",
     maxBuffer: MAX_REPORT_MIB * 1024 * 1024,
-    timeout: 120000,
+    timeout: seconds * 1000,
   });
+  if ((child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")
+    throw new Error(`The engine ran past the ${seconds} second limit for ${command}; no report was produced.`);
   if ((child.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS")
     throw new Error(
       `Report exceeds the ${MAX_REPORT_MIB} MiB output limit; narrow the query or reduce path/step limits. No complete report was produced.`,

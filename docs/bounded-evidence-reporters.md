@@ -130,6 +130,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
 | `operand` | the target an instruction-owned segment operand names | [segment operand query](#instruction-owned-segment-operand-query) |
 | `operand-candidates` | encoded displacements and immediates equal to an offset | [function bounds](#function-bounds-and-site-ownership) |
+| `scan-index` | raw immediate, displacement and resolved-call candidates from a reusable local index of every declared offset | [repeated caller and operand searches](#repeated-caller-and-operand-searches) |
 | `target` | call-target provenance of one call site | [call-target provenance](#call-target-provenance) |
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
@@ -480,6 +481,18 @@ undecided by its stopped paths name the reasons. The frame is observed under the
 the entry through an indirect jump stops there and leaves the frame unestablished, even when the
 query declares that jump.
 
+## Repeated caller and operand searches
+
+`scan-index` takes the normal verified source and mappings, an absolute `scanIndex.directory`, and a `query` with `kind` (`immediate`, `displacement` or `call`), an integer `value`, an optional `limit` (1..10000, default 1000) and up to 128 matching-site `controls`, all of which must match. The first run decodes every declared source offset into a SQLite corpus, within `scanLimit` (default 1,048,576) and 256 MiB of disk, and later runs query that corpus. A build that reaches either limit or fails publishes nothing.
+
+A call query's value is the mapped source-file offset from the existing call resolver. Computed and unmapped calls stay unresolved, and so do calls with an operand-size override, which the frame model does not cover. Operand queries compare Capstone's decoded signed integer exactly, without normalizing widths or inferring a memory access from a displacement. As in `operand-candidates`, only encoded literals count: implicit operands (`SHL AX,1`, `[BX]`) and relative branch targets are not immediates or displacements.
+
+The corpus is keyed by the source, a SHA-256 of the prepared configuration other than the query, output location and source pathname, the decoder version and the engine's Python sources. Any other config or tooling change builds a new corpus, and a query change reuses it. Source verification still runs on a hit, and an invalid cache fails with a diagnostic.
+
+Each report gives raw candidates as `site` and `size`, including instruction interiors and prefix decodes, with `totalCandidates` and `resultLimitReached` for truncated rows. `undecodedRanges` (half-open `start`/`end` offsets where nothing decoded) and `unresolvedCalls` (`site` and `size`) list where the scan could not see, up to `query.limit` rows each, with `undecodedRangesLimitReached` and `unresolvedCallsLimitReached` when more exist. A value inside one of them is invisible to the index.
+
+Use the index for leads before an entry-path reading. Zero results do not prove non-use, least of all with undecoded ranges or unresolved calls listed. Keep indexes under `GAME_DIR` with their config and versions, and have findings cite the regeneration procedure.
+
 ## Limits and assumptions
 
 Capstone decodes each instruction. Its values, flags and branch conditions come from Ghidra's
@@ -650,7 +663,7 @@ be formed leaves `bp` null and names the reason in `bpUnresolved`). A `dispatch`
 its site with an index register that cannot be formed reports the outcome `unresolved` with the
 limit message as its `unresolved`. Outside a traced path, such as while preparing a query or after
 tracing, the cap fails the run.
-The Node wrapper caps output at 32 MiB and execution at 120 seconds. The engine writes compact
+The Node wrapper caps output at 32 MiB and execution at 120 seconds (600 seconds for `scan-index`). The engine writes compact
 JSON to the wrapper, which prints the parsed report indented; run on a config file, the engine
 prints indented JSON itself. A limit never
 turns a partial search into an absence claim. `completeWithinModel` means all

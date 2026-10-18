@@ -65,6 +65,7 @@ Analyses instructions and emits `bounded-x86-v1` reports.
   call targets, callee graphs, function bounds and site ownership, and the call targets a function
   inventory lacks.
 - Parses PE32/i386 sources and derives their section mappings.
+- Keeps repeated raw caller and operand searches in a local, content-keyed `scan-index` SQLite corpus (ADR 0049).
 - Ships the shared Ghidra headless scripts as package data. `scientific-method-engine
   ghidra-scripts` prints their directory for `analyzeHeadless -scriptPath`.
 - Run directly, it trusts whatever relocation data a config supplies, so direct use is limited to

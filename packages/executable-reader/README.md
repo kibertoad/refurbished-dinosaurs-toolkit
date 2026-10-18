@@ -33,10 +33,11 @@ more than one UTF-8 mark, or bytes that are not UTF-8, are refused with the caus
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
-`inventory-check`, `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
+`inventory-check`, `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `scan-index`, `target`, `bounds`,
 `owner`, `callees`, `reach`, `pointers`, `table`, `bodies`, `imports` and `unpack`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
 `pointers`, `table`, `bodies`, `imports` and `unpack` run entirely in Node; every other command runs in the engine.
+The engine gets 120 seconds per command, and 600 seconds for `scan-index`, whose first build decodes every declared offset.
 `inventory-check` reads the function inventory TSV that `inventory` names, relative to the config file's
 directory as `source` is.
 `table` reads the entries of one pointer table from the bytes of an `mz` or `pe32` source and
@@ -117,6 +118,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `prepare(config, base)` | `.` | Verifies the source hash and builds the prepared config the engine receives. |
 | `PREPARED_PROTOCOL` | `.` | The prepared-config protocol number this reader speaks. |
 | `MAX_REPORT_MIB` | `.` | The most engine output, in MiB, that `run` reads before it fails. |
+| `ENGINE_TIMEOUT_SECONDS`, `SCAN_INDEX_TIMEOUT_SECONDS` | `.` | How long `run` lets the engine run a command, and `scan-index`, before it fails with no report. |
 | `sourceXxh3(bytes)` | `.` | The XXH3-128 hash `xxh3` must equal, as 32 lower-case hex digits. |
 | `readerTool()` | `.` | The reader's package name and version, the `tool` the `unpack` report gives. |
 | `UnpackConfig` | `.` | Type of the `unpack` config. |
