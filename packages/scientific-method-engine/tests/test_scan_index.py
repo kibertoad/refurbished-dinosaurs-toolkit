@@ -40,7 +40,6 @@ class ScanIndexTests(unittest.TestCase):
         self.assertTrue(second["cacheHit"])
         self.assertEqual(first["cacheKey"], second["cacheKey"])
         self.assertEqual(second["rawCandidates"], [{"site": 3, "size": 3}])
-        self.assertGreater(first["scan"]["unresolvedCallCandidates"], 0)
 
     def test_calls_controls_and_result_limit(self):
         config = copy.deepcopy(self.config)

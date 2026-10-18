@@ -106,7 +106,7 @@ def _build(image, destination, identity):
 def scan_index(image, config):
     """Query a content-keyed local SQLite index of every-offset decode candidates.
 
-    ``scanIndex.directory`` must be an absolute directory under ``GAME_DIR``.
+    ``scanIndex.directory`` must be an absolute directory.
     ``query`` names ``kind`` (immediate, displacement, call), integer ``value``,
     ``limit`` (1..10000, default 1000) and optional matching-site ``controls``.
     A call value is a mapped source-file offset, not a loaded address. Every
@@ -152,7 +152,7 @@ def scan_index(image, config):
             raise ValueError("scan-index exceeds the 256 MiB cache limit")
         with closing(sqlite3.connect(destination.as_uri() + "?mode=ro", uri=True)) as db:
             raw = db.execute("SELECT value FROM metadata").fetchall()
-            if len(raw) != 1 or len(raw[0][0]) > 16 * 1024 * 1024:
+            if len(raw) != 1:
                 raise ValueError("scan-index metadata is invalid; remove this local cache and rebuild")
             metadata = json.loads(raw[0][0])
             if not isinstance(metadata, dict) or metadata.get("identity") != identity:
