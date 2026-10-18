@@ -59,7 +59,7 @@ the PE import tables and the NE relocation tables in the reader.
 
 Repeated raw caller and operand searches can use its local, content-keyed
 `scan-index` SQLite corpus (ADR 0049). It preserves candidate-only meaning and
-source verification; original-derived indexes stay outside Git.
+source verification; original-derived indexes stay in `GAME_DIR`.
 
 Analyses instructions and emits `bounded-x86-v1` reports.
 

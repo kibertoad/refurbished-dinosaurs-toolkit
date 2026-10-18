@@ -598,7 +598,7 @@ value.
 
 `scan-index` adds optional persistent raw caller/operand searches. Existing
 queries do not change. Keep the normal verified reader entry point and add
-`scanIndex.directory` (an absolute licensed-local path) plus `query.kind`,
+`scanIndex.directory` (an absolute path under `GAME_DIR`) plus `query.kind`,
 `query.value` and optional `query.limit`/`controls`. No reader protocol change
 is required. These are raw candidates only. Keep indexes out of Git; source,
 mapping, entry, budget and tooling changes produce a different key. See the

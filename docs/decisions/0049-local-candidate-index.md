@@ -11,7 +11,7 @@ The content key includes verified source bytes, prepared mappings and entries,
 scan budget, decoder version and engine source identity. Queries and output
 location do not affect the corpus. Builds publish atomically after scanning
 every declared offset, with a disk bound and no partial-cache reuse.
-Original-derived corpora remain local. The index is a regenerable search aid,
+Original-derived corpora stay in `GAME_DIR`. The index is a regenerable search aid,
 never an independent source of evidence or an instruction-start inventory.
 
 The index does not cache traced state or prove reachability. All rows remain

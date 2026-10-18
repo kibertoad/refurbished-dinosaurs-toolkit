@@ -80,7 +80,7 @@ def _build(image, destination, identity):
 def scan_index(image, config):
     """Query a content-keyed local SQLite index of every-offset decode candidates.
 
-    ``scanIndex.directory`` must be an absolute local evidence-store directory.
+    ``scanIndex.directory`` must be an absolute directory under ``GAME_DIR``.
     ``query`` names ``kind`` (immediate, displacement, call), integer ``value``,
     ``limit`` (1..10000, default 1000) and optional matching-site ``controls``.
     A call value is a mapped source-file offset, not a loaded address. Every
@@ -92,7 +92,7 @@ def scan_index(image, config):
         raise ValueError("scanIndex needs only directory")
     directory = options["directory"]
     if not isinstance(directory, str) or not Path(directory).is_absolute():
-        raise ValueError("scanIndex.directory must be an absolute local evidence-store path")
+        raise ValueError("scanIndex.directory must be an absolute path under GAME_DIR")
     if not isinstance(query, dict) or set(query) - {"kind", "value", "limit", "controls"}:
         raise ValueError("scan-index query needs kind, value, optional limit and controls")
     kind = query.get("kind")
