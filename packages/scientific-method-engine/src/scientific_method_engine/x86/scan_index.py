@@ -15,7 +15,7 @@ from .image import CAPSTONE_VERSION, integer, scan_limit
 from .reports import _relative_transfer
 from .trace import call_target, unsupported_transfer
 
-SCHEMA = 1
+SCHEMA = 2
 MAX_INDEX_BYTES = 256 * 1024 * 1024
 INSERT_BATCH = 10000
 
@@ -45,16 +45,23 @@ def _build(image, destination, identity):
             db.execute(f"PRAGMA max_page_count={MAX_INDEX_BYTES // 4096}")
             db.execute("CREATE TABLE candidates (site INTEGER, size INTEGER, kind TEXT, value INTEGER)")
             db.execute("CREATE TABLE metadata (value TEXT)")
+            db.execute("CREATE TABLE undecoded (start INTEGER, end INTEGER)")
+            db.execute("CREATE TABLE unresolved_calls (site INTEGER, size INTEGER)")
             undecoded = unresolved = rows = 0
             pending = []
             for region in image.regions:
+                gap = None
                 for site in range(region["start"], region["end"]):
                     ins = image.decode(site)
                     # The one-shot decoder cache is unnecessary during a whole-corpus scan.
                     image.cache.pop(site, None)
                     if ins is None:
                         undecoded += 1
+                        gap = site if gap is None else gap
                         continue
+                    if gap is not None:
+                        db.execute("INSERT INTO undecoded VALUES (?, ?)", (gap, site))
+                        gap = None
                     found = set()
                     for operand in ins.operands:
                         # Only encoded literals, as operand-candidates reads them: implicit forms (SHL r,1;
@@ -68,6 +75,7 @@ def _build(image, destination, identity):
                         target = None if unsupported_transfer(image, ins) else call_target(image, site, ins)[0]
                         if target is None:
                             unresolved += 1
+                            db.execute("INSERT INTO unresolved_calls VALUES (?, ?)", (site, ins.size))
                         else:
                             found.add(("call", target))
                     pending.extend((site, ins.size, kind, value) for kind, value in sorted(found))
@@ -75,6 +83,8 @@ def _build(image, destination, identity):
                     if len(pending) >= INSERT_BATCH:
                         db.executemany("INSERT INTO candidates VALUES (?, ?, ?, ?)", pending)
                         pending.clear()
+                if gap is not None:
+                    db.execute("INSERT INTO undecoded VALUES (?, ?)", (gap, region["end"]))
             db.executemany("INSERT INTO candidates VALUES (?, ?, ?, ?)", pending)
             db.execute("CREATE INDEX lookup ON candidates (kind, value, site)")
             metadata = {"identity": identity, "scannedBytes": image.code_bytes,
@@ -101,6 +111,8 @@ def scan_index(image, config):
     ``limit`` (1..10000, default 1000) and optional matching-site ``controls``.
     A call value is a mapped source-file offset, not a loaded address. Every
     result remains a raw candidate, including prefix and interior decodes.
+    ``undecodedRanges`` (half-open) and ``unresolvedCalls`` list where the scan
+    could not see, up to ``limit`` rows each.
     Source verification and MZ/FBOV preparation stay with the normal reader.
     """
     options, query = config.get("scanIndex"), config.get("query")
@@ -153,10 +165,17 @@ def scan_index(image, config):
             total = db.execute("SELECT count(*) FROM candidates WHERE kind=? AND value=?", (kind, value)).fetchone()[0]
             rows = db.execute("SELECT site, size FROM candidates WHERE kind=? AND value=? ORDER BY site LIMIT ?",
                               (kind, value, limit)).fetchall()
+            # A negative result is only as complete as the offsets that decoded and the calls that resolved.
+            gaps = db.execute("SELECT start, end FROM undecoded ORDER BY start LIMIT ?", (limit + 1,)).fetchall()
+            calls = db.execute("SELECT site, size FROM unresolved_calls ORDER BY site LIMIT ?", (limit + 1,)).fetchall()
     except (sqlite3.Error, json.JSONDecodeError) as error:
         raise ValueError(f"scan-index cache failed; remove this local cache and rebuild: {error}") from None
     return {"command": "scan-index", "cacheKey": key, "cacheHit": hit,
             "scan": metadata, "query": query, "totalCandidates": total,
             "resultLimitReached": total > limit,
             "rawCandidates": [{"site": site, "size": size} for site, size in rows],
+            "undecodedRanges": [{"start": start, "end": end} for start, end in gaps[:limit]],
+            "undecodedRangesLimitReached": len(gaps) > limit,
+            "unresolvedCalls": [{"site": site, "size": size} for site, size in calls[:limit]],
+            "unresolvedCallsLimitReached": len(calls) > limit,
             "meaning": "Every-offset decode candidates only; no entry-path qualification or absence proof."}
