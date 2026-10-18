@@ -240,8 +240,8 @@ def _no_return_check(image, routines, declared, limit):
     them and continues past every interrupt except a declared one, as ``reach`` reads them, so a
     routine that ends in an interrupt that returns is contradicted by what follows it. Calls are
     stepped over at their return sites with their targets resolved, so a call to a declared routine
-    or at a declared site still ends its branch, and no callee is decoded or spends ``limit``: the
-    walk reads only the routines' own paths.
+    or at a declared site still ends its branch, and no callee other than a declared routine is
+    decoded or spends ``limit``: the walk reads only the routines' and the declared routines' own paths.
     A routine the walk did not establish, one that does not decode or that a rejected overlap removed,
     has no return sites and is not in ``read``.
     """

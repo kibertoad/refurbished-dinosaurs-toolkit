@@ -446,6 +446,13 @@ class InventoryCheckTests(unittest.TestCase):
         r = self.check(inventory, data=returning, noReturn=exit_routine, instructionLimit=4)
         self.assertFalse(r["noReturnCheckLimitReached"])
         self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([4], True))
+        # A declared indirect call on the routine's own path is stepped over too, and the return past it
+        # still contradicts the declaration.
+        declared_call = bytes.fromhex("c3" "ffd3" "c3" "c3")
+        r = self.check("start\tsize\n1000:0000\t1\n1000:0001\t3\n1000:0004\t1\n", data=declared_call,
+                       noReturn=exit_routine, indirectCalls=[{"site": 1, "exhaustive": True, "targets": [4],
+                                                              "evidence": "synthetic: bx holds 0004"}])
+        self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([3], True))
 
     def test_a_contested_instruction_holds_no_target(self):
         # Entries 0 and 1 overlap, so the call at 0003 is contested. The raw call at 000D targets 0004, a byte of

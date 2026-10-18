@@ -193,8 +193,9 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     is neither resolved nor reported. With ``resolve_over_calls`` it also continues at its return
     site only, but the target is resolved first, so the declarations below still end their branches:
     a call to a routine in ``no_return_calls`` ends the branch, an unresolved target still records
-    its gap, and a declared indirect call keeps its declaration's rule without entering its targets.
-    No stepped-over target is entered. A call whose resolved target is in ``no_return_calls``, and an
+    its gap, and a declared indirect call keeps its declaration's rule. Only a target in
+    ``no_return_calls`` is entered and reported as an edge, since a declared routine's own paths are
+    ones the walk reads; no other callee is. A call whose resolved target is in ``no_return_calls``, and an
     interrupt whose site is in ``no_return_interrupts``, have no return site: the query declared that
     they never come back. A call whose site is in ``no_return_call_sites`` has no return site either,
     whatever its target: the query declared that this one call never comes back. A call whose site
@@ -219,7 +220,9 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
         return Step(targets, False, None, gaps, edges, supplied=True)
     declaration = (indirect_calls or {}).get(at)
     if declaration is not None:
-        targets = list(declaration["targets"])
+        # Under resolve_over_calls only a declared noReturn routine is entered, and successor_kinds counts the
+        # target edges as the call successors, so a target that is not entered gets no edge either.
+        targets = [t for t in declaration["targets"] if not resolve_over_calls or t in no_return_calls]
         edges = [{"site": at, "target": target, "kind": m,
                   "provenance": {"encoding": "declared indirect call", "evidence": declaration["evidence"]}}
                  for target in targets]
@@ -229,22 +232,23 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
             gaps.append({"site": at, "reason": reason})
             edges.append({"site": at, "target": None, "kind": m, "provenance": {"reason": reason}})
         if declared_call_ends(declaration, no_return_calls) or at in no_return_call_sites:
-            return Step([] if resolve_over_calls else targets, False, None, gaps, edges, supplied=True)
+            return Step(targets, False, None, gaps, edges, supplied=True)
         return_site = following if following not in targets else None
-        return Step(([] if resolve_over_calls else targets) + [following], False, return_site, gaps, edges,
-                    supplied=True)
+        return Step(targets + [following], False, return_site, gaps, edges, supplied=True)
     if m in RETURNS:
         return Step([], True, None, [], [])
     successors, gaps, edges = [], [], []
     calls = m in ("call", "lcall")
     if calls and resolve_over_calls:
-        # The target is resolved only to apply the declarations; it is never entered or reported as an edge.
+        # The target is resolved to apply the declarations. A declared noReturn routine is entered, since its own
+        # paths are ones the check reads; any other callee is neither entered nor reported as an edge.
         target, provenance = call_target(image, at, ins)
         if target is None:
             edges.append({"site": at, "target": None, "kind": m, "provenance": provenance})
             gaps.append({"site": at, "reason": provenance.get("reason", "target outside declared regions")})
         elif target in no_return_calls:
-            return Step(successors, False, None, gaps, edges)
+            edges.append({"site": at, "target": target, "kind": m, "provenance": provenance})
+            return Step([target], False, None, gaps, edges)
     elif (calls and not step_over_calls) or m == "ljmp" or m.startswith(("j", "loop")):
         target, provenance = call_target(image, at, ins)
         edges.append({"site": at, "target": target, "kind": m, "provenance": provenance})
@@ -289,8 +293,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     interrupt sites, ``no_return_call_sites`` at a call at one of those sites, and ``indirect_calls``
     continues a declared indirect call at its declared targets, as ``cfg_step`` describes.
     ``resolve_over_calls`` steps over every call at its return site after resolving its target, so
-    those declarations still end their branches but no callee is entered: the walk reads only the
-    entries' own paths, and only they spend ``limit``. A
+    those declarations still end their branches but no callee is entered other than a routine in
+    ``no_return_calls``: the walk reads only the entries' and the declared routines' own paths, and
+    only they spend ``limit``. A
     declared table whose count was derived from the code, and that the walk reads, gets a gap
     (``derived_counts.entry_gaps``) when an edge the walk read enters the routine the count was
     derived over other than at its start.

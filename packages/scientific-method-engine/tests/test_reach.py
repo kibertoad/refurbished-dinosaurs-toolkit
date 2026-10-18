@@ -672,6 +672,29 @@ class StopTests(unittest.TestCase):
         self.assertEqual(r["returnCheckGaps"], [])
         self.assertTrue(r["negativeUsable"])
 
+    def test_the_check_reads_past_a_stepped_over_declared_indirect_call(self):
+        # 0000 call R at 0004; 0003 ret. R calls the stop routine S at 000C, then makes a declared call
+        # at 0007 to T at 000D and returns at 0009, which only the check reads.
+        data = bytes.fromhex("e80100" "c3" "e80500" "ffd3" "c3" "9090" "c3" "c3")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"}]
+        declared = [{"site": 7, "exhaustive": True, "targets": [0x0D], "evidence": "synthetic: bx holds 000D"}]
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, indirectCalls=declared,
+                                    stops=[{"routine": 0x0C, "reason": CUT}]), "reach")
+        self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([9], True))
+        self.assertFalse(r["negativeUsable"])
+
+    def test_the_check_enters_a_declared_routine_the_query_reaches_only_past_a_stop(self):
+        # R1 at 0004 calls the stop routine S at 000D, then R2 at 000E, which returns. Only the check
+        # reaches R2, and its return contradicts R2's declaration.
+        data = bytes.fromhex("e80100" "c3" "e80600" "e80400" "ebfe" "90" "c3" "c3")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"},
+                     {"routine": 0x0E, "reason": "synthetic: declared to end the program"}]
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return,
+                                    stops=[{"routine": 0x0D, "reason": CUT}]), "reach")
+        self.assertEqual([(row["reached"], row["read"], row["returnSites"], row["contradicted"]) for row in r["noReturn"]],
+                         [(True, True, [], False), (False, True, [0x0E], True)])
+        self.assertFalse(r["negativeUsable"])
+
     def test_the_no_return_checks_callees_do_not_spend_the_instruction_limit(self):
         # R's callee at 000B holds nine instructions; a check that entered it would trip a limit of
         # six, where R's own path holds two.

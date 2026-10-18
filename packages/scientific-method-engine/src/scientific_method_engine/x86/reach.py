@@ -1047,8 +1047,9 @@ def reach(image, config):
     if stop_met and checked:
         # A stop cuts the query and says nothing about the build, so the return check reads the reached
         # declared routines without the stops: code a stop hid can still contradict a declaration. It
-        # steps over calls with their targets resolved, so only the routines' own paths are decoded
-        # and spend the instruction limit; returns_from skips call edges either way.
+        # steps over calls with their targets resolved, entering only a declared routine, so only the
+        # declared routines' own paths are decoded and spend the instruction limit; returns_from skips
+        # call edges either way.
         read, check_gaps, _, _, check_contested = walk(image, sorted(at for at in checked if at in distance),
                                                        instruction_limit, follow_interrupts=True,
                                                        stops=frozenset(leaves), resolve_over_calls=True, **declared)
