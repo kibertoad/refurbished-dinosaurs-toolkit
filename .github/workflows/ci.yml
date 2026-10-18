@@ -233,6 +233,8 @@ jobs:
           classpath="$(find "$GHIDRA_LIB" -path '*/lib/*.jar' | paste -sd ':')"
           if [ -z "$classpath" ]; then echo "No Ghidra jars under $GHIDRA_LIB." >&2; exit 1; fi
           javac -proc:none -nowarn -d "$RUNNER_TEMP/ghidra-classes" -cp "$classpath" "$SCRIPTS"/*.java "$SCRIPTS"/*/*.java
+          javac -proc:none -nowarn -d "$RUNNER_TEMP/ghidra-classes" -cp "$RUNNER_TEMP/ghidra-classes" packages/scientific-method-engine/tests/java/QueryBatchHarness.java
+          java -cp "$RUNNER_TEMP/ghidra-classes" QueryBatchHarness
   # Runs the check-documentation action as a restoration would, against the test fixture, so the
   # Kaitai Struct compiler install and the .ksy compilation run on every runner platform.
   documentation-action:

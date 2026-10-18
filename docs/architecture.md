@@ -68,6 +68,8 @@ Analyses instructions and emits `bounded-x86-v1` reports.
 - Keeps repeated raw caller and operand searches in a local, content-keyed `scan-index` SQLite corpus (ADR 0049).
 - Ships the shared Ghidra headless scripts as package data. `scientific-method-engine
   ghidra-scripts` prints their directory for `analyzeHeadless -scriptPath`.
+  `RunQueryPlan` composes bounded read-only reporters in that same session with an
+  audit and per-target controls ([query plans](query-plans.md)).
 - Run directly, it trusts whatever relocation data a config supplies, so direct use is limited to
   synthetic inputs, PE32 sources and already checked mappings.
 

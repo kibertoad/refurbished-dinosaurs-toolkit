@@ -19,6 +19,11 @@ test("an engine change runs the engine tests and the TypeScript job, whose bridg
 
 test("a Ghidra script or helper class change compiles the scripts and runs the engine's jobs, whose package ships them", () => {
   const ghidra = "packages/scientific-method-engine/src/scientific_method_engine/ghidra/";
+  assert.deepEqual(on(["packages/scientific-method-engine/tests/java/QueryBatchHarness.java"]), [
+    "engine",
+    "ghidraScripts",
+    "typescript",
+  ]);
   assert.deepEqual(on([`${ghidra}ExportCallEdges.java`]), ["engine", "ghidraScripts", "typescript"]);
   assert.deepEqual(on([`${ghidra}scientificmethod/FirstArgumentLookBack.java`]), [
     "engine",

@@ -601,6 +601,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 19.10.0 | [Related Ghidra queries can share one audited session](#engine-19100-related-ghidra-queries-can-share-one-audited-session) |
 | 19.0.0 | [`inventory-check` lists row starts at unresolved overlaps](#engine-1900-inventory-check-lists-row-starts-at-unresolved-overlaps) |
 | 18.0.0 | [Capstone 5.0.9 and pypcode 4.0.1](#engine-1800-capstone-509-and-pypcode-401) |
 | 17.0.0 | [A `uses` conditional access of unknown width has no width](#engine-1700-a-uses-conditional-access-of-unknown-width-has-no-width) |
@@ -625,6 +626,16 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 19.10.0: related Ghidra queries can share one audited session
+
+`RunQueryPlan.java` is an optional composer for read-only reporters. Existing
+script invocations keep working. To adopt it, create a local bounded plan with a
+project audit and target-specific completion/rejection controls, then invoke it
+once against the validated project with `-noanalysis -readOnly`. Read every target
+disposition and the overall JSON status; a launcher exit code alone is insufficient.
+The plan's source/import hash check does not replace mapped-byte and loader audits.
+See [query plans](query-plans.md). This adds no cache or prepared-config change.
 
 ### Engine 19.0.0: `inventory-check` lists row starts at unresolved overlaps
 
