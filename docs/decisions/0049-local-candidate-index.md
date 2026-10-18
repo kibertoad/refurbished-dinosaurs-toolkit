@@ -10,7 +10,9 @@ Python's standard library; no new runtime dependency is needed.
 The content key includes verified source bytes, prepared mappings and entries,
 scan budget, decoder version and engine source identity. Queries and output
 location do not affect the corpus. Builds publish atomically after scanning
-every declared offset, with a disk bound and no partial-cache reuse.
+every declared offset, with a disk bound and no partial-cache reuse. The
+corpus also stores the undecoded ranges and unresolved call sites, which every
+query reports, since they bound what a negative result covers.
 Original-derived corpora stay in `GAME_DIR`. The index is a regenerable search aid,
 never an independent source of evidence or an instruction-start inventory.
 

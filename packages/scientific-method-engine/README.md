@@ -29,7 +29,8 @@ queries. Add `scanIndex: {"directory": "<absolute path under GAME_DIR>"}` and
 Kinds are `immediate`, `displacement` and `call`; a call value is a mapped source
 file offset. Controls are matching source offsets; a missed control fails.
 Results include `cacheHit`, `cacheKey`, `rawCandidates`, `totalCandidates`
-and `resultLimitReached`. Every-offset decodes include instruction interiors
+and `resultLimitReached`, plus `undecodedRanges` and `unresolvedCalls`, each
+capped at the query limit with its own `...LimitReached` flag. Every-offset decodes include instruction interiors
 and prefix duplicates. They establish neither reachability nor absence.
 
 The key covers verified source bytes, prepared mapping/configuration, decoder

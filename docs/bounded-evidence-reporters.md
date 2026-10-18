@@ -24,7 +24,7 @@ original program, invoke DOSBox or change a spec status.
 
 | Command | Inputs | Limits and acceptance |
 |---|---|---|
-| `scan-index` | Normal verified source/mappings, absolute `scanIndex.directory`, `query.kind` (`immediate`, `displacement`, `call`), integer `query.value`; optional `query.limit` and matching-site `query.controls` | Scans each declared source offset once. Default `scanLimit` 1,048,576; an exhausted budget publishes nothing. Index at most 256 MiB; query 1..10000 rows, default 1000; at most 128 controls, all must match. Reports raw candidates, including interior/prefix decodes, with undecoded and unresolved-call counts. |
+| `scan-index` | Normal verified source/mappings, absolute `scanIndex.directory`, `query.kind` (`immediate`, `displacement`, `call`), integer `query.value`; optional `query.limit` and matching-site `query.controls` | Scans each declared source offset once. Default `scanLimit` 1,048,576; an exhausted budget publishes nothing. Index at most 256 MiB; query 1..10000 rows, default 1000; at most 128 controls, all must match. Reports raw candidates, including interior/prefix decodes, with undecoded and unresolved-call counts, and lists up to `query.limit` undecoded ranges and unresolved call sites. |
 
 Run `scientific-method scan-index <local-query.json>` through the normal reader.
 A call query's value is the mapped source-file offset from the existing call
@@ -39,8 +39,15 @@ changes reuse the corpus. Source verification still runs on a hit. Invalid
 caches fail with a diagnostic. Publication is atomic. `totalCandidates` remains
 available when `resultLimitReached` truncates the displayed rows.
 
+`undecodedRanges` gives half-open `start`/`end` source offsets where no
+instruction decoded, and `unresolvedCalls` gives the `site` and `size` of calls
+whose target the resolver could not map. Each lists up to `query.limit` rows,
+with `undecodedRangesLimitReached` and `unresolvedCallsLimitReached` set when
+more exist. A value hidden in one of them is invisible to the index, so a
+negative result names them.
+
 Use the index for leads before an entry-path reading. Zero results cannot prove
-non-use. Retain indexes under `GAME_DIR`, with their config and versions. Findings
+non-use, least of all with undecoded ranges or unresolved calls listed. Retain indexes under `GAME_DIR`, with their config and versions. Findings
 cite the regeneration procedure and state the result in their own words.
 
 The input names a hash-checked source and evidenced code regions. For MZ/FBOV,

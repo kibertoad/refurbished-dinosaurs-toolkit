@@ -56,6 +56,28 @@ class ScanIndexTests(unittest.TestCase):
         self.assertEqual(report["totalCandidates"], 2)
         self.assertEqual(len(report["rawCandidates"]), 1)
 
+    def test_reports_where_the_scan_could_not_see(self):
+        report = self.report()
+        self.assertEqual(report["unresolvedCalls"], [{"site": 9, "size": 2}])
+        self.assertFalse(report["unresolvedCallsLimitReached"])
+        self.assertEqual(report["undecodedRanges"], [])
+        # RET, then MOV AX,imm16 and XOR AL,imm8 cut off by each region's end.
+        data = bytes.fromhex("c3b834c3b834")
+        config = copy.deepcopy(self.config)
+        config["regions"] = [
+            {"name": "a", "start": 0, "end": 3, "ip": 0, "segment": 4096, "entries": [0], "evidence": "synthetic"},
+            {"name": "b", "start": 3, "end": 6, "ip": 0, "segment": 8192, "entries": [3], "evidence": "synthetic"}]
+        config["query"] = {"kind": "immediate", "value": 0x1234}
+        first = self.report(config, data)
+        self.assertEqual(first["undecodedRanges"], [{"start": 1, "end": 3}, {"start": 4, "end": 6}])
+        self.assertEqual(first["scan"]["undecodedOffsets"], 4)
+        config["query"]["limit"] = 1
+        with patch.object(Image, "decode", side_effect=AssertionError("cache hit decoded again")):
+            capped = self.report(config, data)
+        self.assertTrue(capped["cacheHit"])
+        self.assertEqual(capped["undecodedRanges"], [{"start": 1, "end": 3}])
+        self.assertTrue(capped["undecodedRangesLimitReached"])
+
     def test_changed_source_mapping_entries_and_decoder_identity_invalidate(self):
         first = self.report()["cacheKey"]
         self.assertNotEqual(first, self.report(data=self.data[:-1] + b"\x90")["cacheKey"])

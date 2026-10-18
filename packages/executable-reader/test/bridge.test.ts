@@ -65,6 +65,9 @@ test("scan-index reuses prepared MZ candidates and rechecks the source on a cach
   const first = run(["scan-index", path]);
   assert.equal(first.cacheHit, false);
   assert.ok(first.rawCandidates.some((row: Report) => row.site === 64));
+  assert.ok(Array.isArray(first.undecodedRanges) && Array.isArray(first.unresolvedCalls));
+  assert.equal(typeof first.undecodedRangesLimitReached, "boolean");
+  assert.equal(typeof first.unresolvedCallsLimitReached, "boolean");
   assert.equal(run(["scan-index", path]).cacheHit, true);
   data[90] = 1;
   writeFileSync(join(dir, "source.bin"), data);
