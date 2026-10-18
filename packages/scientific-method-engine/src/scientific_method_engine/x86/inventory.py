@@ -239,15 +239,18 @@ def _no_return_check(image, routines, declared, limit):
     ``routines`` are the declared routines, or the targets of the declared calls. The walk starts at
     them and continues past every interrupt except a declared one, as ``reach`` reads them, so a
     routine that ends in an interrupt that returns is contradicted by what follows it. Calls are
-    stepped over at their return sites, except calls to declared routines and declared calls.
+    stepped over at their return sites with their targets resolved, so a call to a declared routine
+    or at a declared site still ends its branch, and no callee other than a declared routine is
+    decoded or spends ``limit``: the walk reads only the routines' and the declared routines' own paths.
     A routine the walk did not establish, one that does not decode or that a rejected overlap removed,
     has no return sites and is not in ``read``.
     """
     from .reach import returns_from, successor_graph
     if not routines:
         return {}, {}, False
-    seen, gaps, _, _, _ = walk(image, sorted(routines), limit, follow_interrupts=True, **declared)
-    graph = successor_graph(image, seen, follow_interrupts=True, **declared)
+    seen, gaps, _, _, _ = walk(image, sorted(routines), limit, follow_interrupts=True, resolve_over_calls=True,
+                               **declared)
+    graph = successor_graph(image, seen, follow_interrupts=True, resolve_over_calls=True, **declared)
     return ({at: returns_from(graph, seen, set(), at) for at in routines}, seen,
             any(g["reason"] == LIMIT_REASON for g in gaps))
 
