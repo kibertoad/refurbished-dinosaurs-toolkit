@@ -23,6 +23,25 @@ scientific-method-engine trace analysis/query.json
 python -m scientific_method_engine trace analysis/query.json
 ```
 
+`scan-index` reuses a local SQLite corpus for repeated raw caller and operand
+queries. Add `scanIndex: {"directory": "<absolute local evidence path>"}` and
+`query: {"kind": "immediate", "value": 68, "limit": 1000, "controls": [0]}`.
+Kinds are `immediate`, `displacement` and `call`; a call value is a mapped source
+file offset. Controls are matching source offsets; a missed control fails.
+Results include `cacheHit`, `cacheKey`, `rawCandidates`, `totalCandidates`
+and `resultLimitReached`. Every-offset decodes include instruction interiors
+and prefix duplicates. They establish neither reachability nor absence.
+
+The key covers verified source bytes, prepared mapping/configuration, decoder
+version and engine Python sources. Changing only the query reuses the corpus;
+each invocation still verifies the source through the normal reader. Default
+`scanLimit` is 1,048,576 source offsets; a shorter budget fails without publishing
+a partial corpus. Indexes are capped at 256 MiB. Query limits are 1..10000
+(default 1000), with at most 128 matching-site controls. Undecoded-offset and
+unresolved-call-candidate counts remain in `scan`. Invalid caches are refused;
+remove only the named local cache and rebuild. Keep indexes and reports in the
+licensed local evidence store, never in Git.
+
 The package also carries the shared Ghidra headless scripts. `scientific-method-engine
 ghidra-scripts` prints their directory, for Ghidra's `-scriptPath`:
 

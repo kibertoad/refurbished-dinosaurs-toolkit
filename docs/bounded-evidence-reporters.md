@@ -20,6 +20,29 @@ pnpm exec scientific-method trace "$env:GAME_DIR/analysis/query.json"
 Save redirected output under `GAME_DIR` too. The reporter does not run the
 original program, invoke DOSBox or change a spec status.
 
+## Repeated caller and operand searches
+
+| Command | Inputs | Limits and acceptance |
+|---|---|---|
+| `scan-index` | Normal verified source/mappings, absolute `scanIndex.directory`, `query.kind` (`immediate`, `displacement`, `call`), integer `query.value`; optional `query.limit` and matching-site `query.controls` | Scans each declared source offset once. Default `scanLimit` 1,048,576; an exhausted budget publishes nothing. Index at most 256 MiB; query 1..10000 rows, default 1000; at most 128 controls, all must match. Reports raw candidates, including interior/prefix decodes, with undecoded and unresolved-call counts. |
+
+Run `scientific-method scan-index <local-query.json>` through the normal reader.
+A call query's value is the mapped source-file offset from the existing call
+resolver. Computed and unmapped calls remain unresolved and are counted. Operand
+queries compare Capstone's decoded signed integer exactly; they do not normalize
+widths or infer a memory access from a displacement. Candidates give `site` and `size`.
+
+The content key covers the source, prepared configuration except query/output
+location/source pathname, decoder version and engine Python sources. Source,
+mapping, entry, budget and tooling changes rebuild under another key; query
+changes reuse the corpus. Source verification still runs on a hit. Invalid
+caches fail with a diagnostic. Publication is atomic. `totalCandidates` remains
+available when `resultLimitReached` truncates the displayed rows.
+
+Use the index for leads before an entry-path reading. Zero results cannot prove
+non-use. Retain indexes under `GAME_DIR`, with their config and versions. Findings
+cite the regeneration procedure and state the result in their own words.
+
 The input names a hash-checked source and evidenced code regions. For MZ/FBOV,
 the reader derives relocation membership and canonical trampoline
 targets from the source. The engine's own command line

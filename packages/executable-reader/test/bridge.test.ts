@@ -51,6 +51,26 @@ test("source loader derives relocation membership and far return frames", (t) =>
   assert.ok(report.paths[0].events.some((e: Report) => e.kind === "call-return"));
 });
 
+test("scan-index reuses prepared MZ candidates and rechecks the source on a cache hit", (t) => {
+  const { dir, config, data } = fixture(t);
+  const path = join(dir, "index-query.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...config,
+      scanIndex: { directory: join(dir, "index") },
+      query: { kind: "call", value: 80, controls: [64] },
+    }),
+  );
+  const first = run(["scan-index", path]);
+  assert.equal(first.cacheHit, false);
+  assert.ok(first.rawCandidates.some((row: Report) => row.site === 64));
+  assert.equal(run(["scan-index", path]).cacheHit, true);
+  data[90] = 1;
+  writeFileSync(join(dir, "source.bin"), data);
+  assert.throws(() => run(["scan-index", path]), /xxh3/);
+});
+
 test("config files read the same with a UTF-8 byte order mark and refuse other encodings", (t) => {
   const { dir, config } = fixture(t);
   const path = join(dir, "config.json"),

@@ -57,6 +57,10 @@ the PE import tables and the NE relocation tables in the reader.
 
 ### scientific-method-engine
 
+Repeated raw caller and operand searches can use its local, content-keyed
+`scan-index` SQLite corpus (ADR 0049). It preserves candidate-only meaning and
+source verification; original-derived indexes stay outside Git.
+
 Analyses instructions and emits `bounded-x86-v1` reports.
 
 - Decodes segmented 16-bit and i386 instructions with Capstone and takes their semantics from

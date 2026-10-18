@@ -1884,6 +1884,9 @@ def _run_report(image, config, command):
         raise ValueError("indirectCalls applies only to reach and inventory-check")
     if command == "operand":
         return operand_provenance(image, config)
+    if command == "scan-index":
+        from .scan_index import scan_index
+        return scan_index(image, config)
     if command == "target":
         return call_target_report(image, config)
     if command == "bounds":

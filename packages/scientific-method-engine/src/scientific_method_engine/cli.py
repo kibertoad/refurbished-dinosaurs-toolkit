@@ -13,7 +13,7 @@ PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 # The header names the decoder and instruction semantics that actually ran, not the pins in pyproject.toml.
 DECODER = f"capstone {CAPSTONE_VERSION or 'without distribution metadata'}"
 INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
-USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
+USAGE = ("Usage: scientific-method-engine <scan-index|operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
          "effects|returns|memory|incoming|inventory-check|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges;\n"
