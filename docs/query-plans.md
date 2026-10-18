@@ -33,9 +33,10 @@ and `queries`. The audit and every query have this shape:
 }
 ```
 
-Choose the actual reporter arguments from its catalog. The example control is a
-placeholder, not an acceptance test. Completion must identify the requested
-target, not just a generic reporter heading. Rejection must cover that reporter's
+Choose the actual reporter arguments from its catalog. Replace the example's
+placeholder controls with your own. The completion pattern must match text that
+names the requested target, such as its address; a reporter heading that every
+run prints does not qualify. Rejection must cover that reporter's
 missing-target and internal-limit messages, as well as its errors. One query per
 target makes these controls attributable. A positive known target belongs in
 each contract batch. A completed report means only its configured controls passed.
@@ -57,10 +58,12 @@ the audit's completion marker. Its failure prevents all target queries.
 program path and modification number, snapshot identity, language/compiler and
 each executed script's digest. Every target finishes as
 `completed`, `failed`, `limited`, `cancelled` or `not-run`. Stderr, a missed
-completion control, a rejection control or an exception fails that target;
-later targets still run. Audit failure or cancellation stops subsequent targets.
-The source is hashed again after execution. A changed program modification number
-prevents further script execution. Any non-completed target, program change or
+completion control, a rejection control or an exception fails that target, and
+its `error` says which; later targets still run. Audit failure or cancellation
+stops subsequent targets. The modification number is checked after every target:
+the target that changed it fails and every later target is `not-run`. The source
+is hashed again after execution, and a source that can no longer be read counts
+as changed. Any non-completed target, program change or
 source change makes the batch incomplete and raises a script error. Check the JSON and
 the headless log: Ghidra's launcher exit code alone is not script acceptance.
 If the process is killed, a report left at `running` is incomplete; missing rows

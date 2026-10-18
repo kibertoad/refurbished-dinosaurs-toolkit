@@ -32,6 +32,8 @@ public final class QueryBatch {
             this.output = output;
             this.error = error;
         }
+        /** Set when the target's failure stops the batch; not part of the report. */
+        transient boolean stopsBatch;
     }
 
     @FunctionalInterface
@@ -39,7 +41,14 @@ public final class QueryBatch {
         void run(Query query, Writer output, Writer error) throws Exception;
     }
 
-    private static final class Limit extends RuntimeException {}
+    /** Thrown by an executor when its target fails and no later target may run. */
+    public static final class Stop extends RuntimeException {
+        public Stop(String message) { super(message); }
+    }
+
+    private static final class Limit extends RuntimeException {
+        Limit() { super("Output limit reached."); }
+    }
     private static final class Capture extends Writer {
         private final StringBuilder text = new StringBuilder();
         private final int maximum;
@@ -53,6 +62,16 @@ public final class QueryBatch {
         public void flush() {}
         public void close() {}
         public String toString() { return text.toString(); }
+    }
+
+    /** Validate the audit and every target; returns them in run order, audit first. */
+    public static List<Query> validate(Query audit, List<Query> queries) {
+        if (queries == null) throw new IllegalArgumentException("Supply 1..31 bounded queries.");
+        ArrayList<Query> all = new ArrayList<>();
+        all.add(audit);
+        all.addAll(queries);
+        validate(all);
+        return all;
     }
 
     /** Validate every target before any script can run. Patterns are owner-supplied controls. */
@@ -85,12 +104,19 @@ public final class QueryBatch {
         Capture error = new Capture(query.maxCharacters);
         String status = "completed";
         String failure = "";
+        boolean stopsBatch = false;
         try { executor.run(query, output, error); }
         catch (CancellationException exception) { status = "cancelled"; failure = "Session cancelled."; }
-        catch (Exception exception) { status = "failed"; failure = exception.getClass().getSimpleName() + ": " + exception.getMessage(); }
-        if (output.limited || error.limited) status = "limited";
+        catch (Stop exception) { status = "failed"; failure = exception.getMessage(); stopsBatch = true; }
+        catch (Exception | LinkageError | AssertionError exception) {
+            status = "failed";
+            failure = exception.getClass().getSimpleName() + ": " + exception.getMessage();
+        }
+        if (!status.equals("cancelled") && (output.limited || error.limited)) status = "limited";
         else if (status.equals("completed")) {
-            if (!error.toString().isEmpty() || Pattern.compile(query.reject).matcher(output.toString()).find()) status = "failed";
+            var rejected = Pattern.compile(query.reject).matcher(output.toString());
+            if (!error.toString().isEmpty()) { status = "failed"; failure = "Script wrote to stderr."; }
+            else if (rejected.find()) { status = "failed"; failure = "Rejection control matched: " + rejected.group(); }
             else if (!Pattern.compile(query.complete).matcher(output.toString()).find()) {
                 status = "failed";
                 failure = "Completion control not observed.";
@@ -98,23 +124,27 @@ public final class QueryBatch {
         }
         String diagnostic = error.toString() + failure;
         if (diagnostic.length() > query.maxCharacters) diagnostic = diagnostic.substring(0, query.maxCharacters);
-        return new Result(query.id, status, output.toString(), diagnostic);
+        Result result = new Result(query.id, status, output.toString(), diagnostic);
+        result.stopsBatch = stopsBatch;
+        return result;
     }
 
-    /** Audit failure stops the batch; query failure is local and later targets still run. */
+    /**
+     * Audit failure, cancellation or a {@link Stop} stops the batch; any other query failure is
+     * local and later targets still run.
+     */
     public static List<Result> run(Query audit, List<Query> queries, Executor executor) {
-        ArrayList<Query> all = new ArrayList<>();
-        all.add(audit);
-        all.addAll(queries);
-        validate(all);
+        validate(audit, queries);
         ArrayList<Result> results = new ArrayList<>();
         Result audited = execute(audit, executor);
         results.add(audited);
         boolean stopped = !audited.status.equals("completed");
         for (Query query : queries) {
-            Result result = stopped ? new Result(query.id, "not-run", "", "Audit failed or session cancelled.") : execute(query, executor);
+            Result result = stopped
+                ? new Result(query.id, "not-run", "", "Audit failed, session cancelled or batch stopped.")
+                : execute(query, executor);
             results.add(result);
-            if (result.status.equals("cancelled")) stopped = true;
+            if (result.status.equals("cancelled") || result.stopsBatch) stopped = true;
         }
         return results;
     }

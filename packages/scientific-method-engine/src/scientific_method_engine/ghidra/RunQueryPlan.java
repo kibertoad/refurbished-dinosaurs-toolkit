@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,11 +54,9 @@ public class RunQueryPlan extends GhidraScript {
             plan.snapshot.length() > 256 || plan.queries == null || plan.queries.isEmpty()) {
             throw new IllegalArgumentException("Invalid v1 query plan.");
         }
-        List<QueryBatch.Query> all = new ArrayList<>();
-        all.add(plan.audit);
-        all.addAll(plan.queries);
-        QueryBatch.validate(all);
-        Path source = Path.of(plan.source).toAbsolutePath();
+        List<QueryBatch.Query> all = QueryBatch.validate(plan.audit, plan.queries);
+        Path source = Path.of(plan.source);
+        if (!source.isAbsolute()) throw new IllegalArgumentException("The plan's source must be an absolute path.");
         String sourceHash = sha256(Files.readAllBytes(source));
         if (!sourceHash.equalsIgnoreCase(plan.sourceSha256) ||
             !sourceHash.equalsIgnoreCase(currentProgram.getExecutableSHA256())) {
@@ -77,7 +74,7 @@ public class RunQueryPlan extends GhidraScript {
         report.put("language", currentProgram.getLanguageID().toString());
         report.put("compiler", currentProgram.getCompilerSpec().getCompilerSpecID().toString());
         report.put("status", "running");
-        ResourceFile runner = GhidraScriptUtil.findScriptByName("RunQueryPlan.java");
+        ResourceFile runner = getSourceFile();
         report.put("runnerSha256", resourceSha256(runner));
         report.put("helperSha256", resourceSha256(new ResourceFile(runner.getParentFile(), "scientificmethod/QueryBatch.java")));
         long modification = currentProgram.getModificationNumber();
@@ -88,9 +85,6 @@ public class RunQueryPlan extends GhidraScript {
         Files.writeString(reportPath, gson.toJson(report));
         List<QueryBatch.Result> results = QueryBatch.run(plan.audit, plan.queries, (query, output, error) -> {
             if (monitor.isCancelled()) throw new CancellationException();
-            if (currentProgram.getModificationNumber() != modification) {
-                throw new IllegalStateException("Program changed during batch; target not run.");
-            }
             ResourceFile scriptFile = GhidraScriptUtil.findScriptByName(query.script);
             if (scriptFile == null) throw new IllegalArgumentException("Script not found: " + query.script);
             scripts.put(query.id, resourceSha256(scriptFile));
@@ -98,12 +92,24 @@ public class RunQueryPlan extends GhidraScript {
             PrintWriter err = new PrintWriter(error, true);
             GhidraScript script = GhidraScriptUtil.getProvider(scriptFile).getScriptInstance(scriptFile, err);
             script.setScriptArgs(query.args);
+            // Pass on the .properties locations, as GhidraScript.runScript does for sub-scripts.
+            if (potentialPropertiesFileLocs != null) script.setPotentialPropertiesFileLocations(potentialPropertiesFileLocs);
             try { script.execute(getState(), new ScriptControls(out, err, monitor)); }
             catch (ghidra.util.exception.CancelledException exception) { throw new CancellationException(); }
-            finally { out.flush(); err.flush(); }
+            finally {
+                out.flush();
+                err.flush();
+                // Checked after every target, failed or not, so the target that changed the
+                // program is the one that fails and no later target runs on the changed program.
+                if (currentProgram.getModificationNumber() != modification) {
+                    throw new QueryBatch.Stop("Program changed by this target; later targets not run.");
+                }
+            }
         });
         report.put("results", results);
-        boolean sourceUnchanged = sourceHash.equals(sha256(Files.readAllBytes(source)));
+        boolean sourceUnchanged;
+        try { sourceUnchanged = sourceHash.equals(sha256(Files.readAllBytes(source))); }
+        catch (java.io.IOException exception) { sourceUnchanged = false; }
         boolean programUnchanged = currentProgram.getModificationNumber() == modification;
         boolean completed = sourceUnchanged && programUnchanged && results.stream().allMatch(result -> result.status.equals("completed"));
         report.put("sourceUnchanged", sourceUnchanged);
