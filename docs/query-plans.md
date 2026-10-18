@@ -10,10 +10,13 @@ Run the packaged `RunQueryPlan.java` with the existing headless launcher:
 ```powershell
 $scripts = scientific-method-engine ghidra-scripts
 & "$env:GHIDRA_HOME/support/analyzeHeadless.bat" $projectDirectory $projectName `
-  -process $programName -noanalysis -readOnly -scriptPath "$scripts;$localScripts" `
+  -process $programName -noanalysis -readOnly -scriptPath "`"$scripts;$localScripts`"" `
   -postScript RunQueryPlan.java $planPath $newIgnoredRunDirectory
 ```
 
+The embedded quotes preserve the two script paths through the Windows batch
+launcher. Keep the Ghidra project in a path without dot-prefixed components;
+Ghidra rejects such project paths even though plans and reports can live there.
 The plan and output remain in ignored local storage. The output directory must
 not exist. Supply a v1 JSON plan with `source` (absolute owned source path),
 `sourceSha256`, `snapshot` (the project's audited checkpoint identity), `audit`
