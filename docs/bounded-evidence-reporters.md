@@ -11,6 +11,8 @@ in [pyproject.toml](../packages/scientific-method-engine/pyproject.toml).
 prepared-config protocol differs from its own, so upgrade the two together.
 See [moving from the vendored reporters](migrating-to-scientific-method.md).
 Reports and their configurations stay in `GAME_DIR` and are not committed.
+Related Ghidra reporters can share one audited loaded program through
+[`RunQueryPlan`](query-plans.md), with bounded output and per-target controls.
 For example, from PowerShell with `GAME_DIR` set to the owned game's directory:
 
 ```powershell

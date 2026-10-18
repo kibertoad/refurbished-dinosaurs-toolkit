@@ -136,6 +136,11 @@ javac -proc:none -nowarn -d "$(mktemp -d)" \
   packages/scientific-method-engine/src/scientific_method_engine/ghidra/*/*.java
 ```
 
+The same CI job then compiles `packages/scientific-method-engine/tests/java/QueryBatchHarness.java`
+against the output directory and runs `java -cp <output-directory> QueryBatchHarness`.
+This synthetic executor checks query controls, output limits, cancellation and
+audit refusal without an original program or Ghidra project.
+
 ## Releases
 
 A PR that changes `packages/scientific-method-engine/`, `packages/disc-archiver/`,
