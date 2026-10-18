@@ -198,7 +198,7 @@ events as its loop-stop run.
 
 A second backend runs rust-dos through its HTTP debug server (issue 446,
 [ADR 0040](decisions/0040-rust-dos-session-backend.md)), with the same run lock, C:, guarded
-writes and event log, and a deterministic mode. It targets upstream v1.7.2, with the Windows
+writes and event log, and a deterministic mode. It targets upstream v1.7.5, with the Windows
 x86-64 release executable pinned by SHA-256 in the package. It saves and loads the machine's
 state, strict-match by default, and starts later runs from a checkpoint with a fresh copy of C:
 ([ADR 0041](decisions/0041-rust-dos-save-states.md)), which needs rust-dos's `load_folders`

@@ -73,11 +73,11 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 RUST_DOS_API_VERSION = 1
 
 #: The supported upstream release for Windows x86-64 sessions.
-RUST_DOS_PINNED_TAG = "v1.7.2"
+RUST_DOS_PINNED_TAG = "v1.7.5"
 
-#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.2-windows-x86_64.zip``.
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.5-windows-x86_64.zip``.
 #: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
-RUST_DOS_PINNED_SHA256 = "310de9a912a4874cfceccb2aead71b8da39315aa059dbb5a108f86feb3f73ee4"
+RUST_DOS_PINNED_SHA256 = "1635427ad8eaddd08e11ca31c9fc81cabff5c264bfaa708a1eca477d54184830"
 
 #: The debug server features the session relies on. A server that lacks one is refused. ``build``
 #: puts the commit the emulator was built from in ``/api/version``, which the session record keeps.
@@ -121,7 +121,7 @@ _CONFIG_WARNING = re.compile(
     rf"^\[CONFIG\] Warning: (?:.*{re.escape(EMULATOR_CONFIG)}: |awe32rom: ).*$", re.MULTILINE
 )
 
-# The values rust-dos v1.7.2 takes in [sound]; it warns about any other and keeps its default.
+# The values rust-dos v1.7.2 to v1.7.5 take in [sound]; it warns about any other and keeps its default.
 _SB_MODELS = ("sb16", "sb16vibra", "awe32", "sbpro2", "sb2")
 _SB16_MODELS = ("sb16", "sb16vibra", "awe32")
 _SB_BASES = tuple(range(0x210, 0x281, 0x10))

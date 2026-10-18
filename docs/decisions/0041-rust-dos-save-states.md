@@ -139,7 +139,7 @@ The pinned DOSBox-X (protocol 1.0) has no checkpoint method, as ADR 0028 records
    all-or-nothing restore, identity checked without a prompt, C: travelling with the state, and
    the debugger reset. Until a DOSBox-X revision with protocol 1.1 is pinned, this runs only
    against a build of that branch.
-10. The pinned release is v1.7.2, the first to offer `load_folders`. A run started from a
+10. The pinned release is v1.7.5; v1.7.2 was the first to offer `load_folders`. A run started from a
     checkpoint is refused with `EmulatorRefused` on a server without it. In-session save states
     need only `strict_match` and `check_files`, which v1.7.0 and later offer.
 11. CI tests run against the stand-in rust-dos, which saves and loads its own state files and takes
