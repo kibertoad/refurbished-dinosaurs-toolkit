@@ -594,16 +594,6 @@ value.
 
 ## Engine upgrades
 
-### Engine 19.9.0: reusable raw candidate scans
-
-`scan-index` adds optional persistent raw caller/operand searches. Existing
-queries do not change. Keep the normal verified reader entry point and add
-`scanIndex.directory` (an absolute path under `GAME_DIR`) plus `query.kind`,
-`query.value` and optional `query.limit`/`controls`. No reader protocol change
-is required. These are raw candidates only. Keep indexes out of Git; source,
-mapping, entry, budget and tooling changes produce a different key. See the
-reporter guide for limits and failure behavior.
-
 Engine releases that need a change in a restoration are listed here, newest first. Each entry is
 headed with the engine release that introduced it. An upgrade from one version to a later one
 needs every entry whose version is above the old one and at most the new one. A release that is
@@ -636,6 +626,10 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 19.9.0: reusable raw candidate scans
+
+`scan-index` adds optional persistent raw caller/operand searches. Existing queries do not change. Keep the normal verified reader entry point and add `scanIndex.directory` (an absolute path under `GAME_DIR`) plus `query.kind`, `query.value` and optional `query.limit`/`controls`. No reader protocol change is required. These are raw candidates only. Keep indexes out of Git; source, mapping, entry, budget and tooling changes produce a different key. See the reporter guide for limits and failure behavior.
 
 ### Engine 19.0.0: `inventory-check` lists row starts at unresolved overlaps
 

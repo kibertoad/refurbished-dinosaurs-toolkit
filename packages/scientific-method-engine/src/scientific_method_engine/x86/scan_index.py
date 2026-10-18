@@ -12,15 +12,19 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM
 import xxhash
 
 from .image import CAPSTONE_VERSION, integer, scan_limit
-from .trace import call_target
+from .reports import _relative_transfer
+from .trace import call_target, unsupported_transfer
 
 SCHEMA = 1
 MAX_INDEX_BYTES = 256 * 1024 * 1024
+INSERT_BATCH = 10000
 
 
 def _identity(image):
     # Query, output location and source pathname do not change the decoded corpus.
     config = {k: v for k, v in image.config.items() if k not in ("query", "scanIndex", "source")}
+    # The digest keeps the stored metadata and every report small however large the prepared config is.
+    config_digest = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     sources = hashlib.sha256()
     root = Path(__file__).resolve().parent.parent
     for path in sorted(root.rglob("*.py")):
@@ -28,7 +32,7 @@ def _identity(image):
         sources.update(path.read_bytes())
     return {"schema": SCHEMA, "xxh3": xxhash.xxh3_128_hexdigest(image.data),
             "size": len(image.data), "capstone": CAPSTONE_VERSION,
-            "engineSources": sources.hexdigest(), "config": config}
+            "engineSources": sources.hexdigest(), "configSha256": config_digest}
 
 
 def _build(image, destination, identity):
@@ -42,6 +46,7 @@ def _build(image, destination, identity):
             db.execute("CREATE TABLE candidates (site INTEGER, size INTEGER, kind TEXT, value INTEGER)")
             db.execute("CREATE TABLE metadata (value TEXT)")
             undecoded = unresolved = rows = 0
+            pending = []
             for region in image.regions:
                 for site in range(region["start"], region["end"]):
                     ins = image.decode(site)
@@ -52,26 +57,37 @@ def _build(image, destination, identity):
                         continue
                     found = set()
                     for operand in ins.operands:
-                        if operand.type == X86_OP_IMM:
+                        # Only encoded literals, as operand-candidates reads them: implicit forms (SHL r,1;
+                        # [BX]) and relative branch targets are not immediates or displacements.
+                        if operand.type == X86_OP_IMM and ins.imm_size and not _relative_transfer(ins):
                             found.add(("immediate", operand.imm))
-                        elif operand.type == X86_OP_MEM:
+                        elif operand.type == X86_OP_MEM and ins.disp_size:
                             found.add(("displacement", operand.mem.disp))
                     if ins.group(CS_GRP_CALL):
-                        target, _ = call_target(image, site, ins)
+                        # An operand-size-overridden call is outside the frame model, as direct_calls reports it.
+                        target = None if unsupported_transfer(image, ins) else call_target(image, site, ins)[0]
                         if target is None:
                             unresolved += 1
                         else:
                             found.add(("call", target))
-                    db.executemany("INSERT INTO candidates VALUES (?, ?, ?, ?)",
-                                   [(site, ins.size, kind, value) for kind, value in sorted(found)])
+                    pending.extend((site, ins.size, kind, value) for kind, value in sorted(found))
                     rows += len(found)
+                    if len(pending) >= INSERT_BATCH:
+                        db.executemany("INSERT INTO candidates VALUES (?, ?, ?, ?)", pending)
+                        pending.clear()
+            db.executemany("INSERT INTO candidates VALUES (?, ?, ?, ?)", pending)
             db.execute("CREATE INDEX lookup ON candidates (kind, value, site)")
             metadata = {"identity": identity, "scannedBytes": image.code_bytes,
                         "undecodedOffsets": undecoded, "unresolvedCallCandidates": unresolved,
                         "candidateRows": rows}
             db.execute("INSERT INTO metadata VALUES (?)", (json.dumps(metadata, sort_keys=True),))
-        # A concurrent builder of the same identity produces the same corpus.
-        os.replace(temporary, destination)
+        # A concurrent builder of the same identity produces the same corpus. On Windows the replace
+        # fails while another run has that corpus open, which then already holds the same rows.
+        try:
+            os.replace(temporary, destination)
+        except PermissionError:
+            if not destination.exists():
+                raise
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -114,9 +130,12 @@ def scan_index(image, config):
     folder.mkdir(parents=True, exist_ok=True)
     destination = folder / (key + ".sqlite")
     hit = destination.exists()
-    try:
-        if not hit:
+    if not hit:
+        try:
             _build(image, destination, identity)
+        except sqlite3.Error as error:
+            raise ValueError(f"scan-index build failed and published nothing: {error}") from None
+    try:
         if destination.stat().st_size > MAX_INDEX_BYTES:
             raise ValueError("scan-index exceeds the 256 MiB cache limit")
         with closing(sqlite3.connect(destination.as_uri() + "?mode=ro", uri=True)) as db:

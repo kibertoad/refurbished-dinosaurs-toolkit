@@ -1,6 +1,7 @@
 """Persistent scans use synthetic bytes only and never qualify raw candidates."""
 import copy
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -78,6 +79,8 @@ class ScanIndexTests(unittest.TestCase):
             self.report(config)
         for query in ({"kind": "unknown", "value": 0}, {"kind": "call", "value": True},
                       {"kind": "call", "value": 0, "limit": 0},
+                      {"kind": "call", "value": 0, "limit": 10001},
+                      {"kind": "call", "value": 0, "controls": [0] * 129},
                       {"kind": "call", "value": 0, "controls": [999]}):
             config = copy.deepcopy(self.config)
             config["query"] = query
@@ -95,6 +98,18 @@ class ScanIndexTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cache failed"):
             self.report()
 
+    def test_implicit_operands_branch_targets_and_prefixed_calls_are_not_candidates(self):
+        # MOV AX,[BX]; SHL AX,1; JE 0006; CALL with an operand-size override to 000C; RET.
+        data = bytes.fromhex("8b07d1e0740066e800000000c3")
+        config = copy.deepcopy(self.config)
+        config["regions"][0]["end"] = len(data)
+        for kind, value in (("displacement", 0), ("immediate", 1), ("immediate", 6), ("call", 12)):
+            config["query"] = {"kind": kind, "value": value}
+            self.assertEqual(self.report(config, data)["totalCandidates"], 0, (kind, value))
+        # The unprefixed CALL decoded inside the prefixed one still resolves.
+        config["query"] = {"kind": "call", "value": 10, "controls": [7]}
+        self.assertEqual(self.report(config, data)["rawCandidates"], [{"site": 7, "size": 3}])
+
     def test_flat32_has_separate_mapping_and_candidates(self):
         data = bytes.fromhex("b878563412c3")
         config = copy.deepcopy(self.config)
@@ -103,9 +118,21 @@ class ScanIndexTests(unittest.TestCase):
         config["query"] = {"kind": "immediate", "value": 0x12345678, "controls": [0]}
         self.assertEqual(self.report(config, data)["rawCandidates"], [{"site": 0, "size": 5}])
 
+    def test_concurrent_publication_of_the_same_corpus_is_kept(self):
+        # Windows refuses the replace while another run has the published corpus open.
+        replace = os.replace
+
+        def published_by_another_run(source, destination):
+            replace(source, destination)
+            raise PermissionError("in use")
+        with patch("scientific_method_engine.x86.scan_index.os.replace", side_effect=published_by_another_run):
+            report = self.report()
+        self.assertEqual(report["rawCandidates"], [{"site": 0, "size": 3}])
+        self.assertEqual(list(Path(self.folder.name).glob('*.partial')), [])
+
     def test_disk_budget_failure_never_publishes_a_partial_index(self):
         with patch("scientific_method_engine.x86.scan_index.MAX_INDEX_BYTES", 4096):
-            with self.assertRaisesRegex(ValueError, "cache failed"):
+            with self.assertRaisesRegex(ValueError, "build failed and published nothing"):
                 self.report()
         self.assertEqual(list(Path(self.folder.name).glob('*.sqlite')), [])
         self.assertEqual(list(Path(self.folder.name).glob('*.partial')), [])

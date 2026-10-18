@@ -1,8 +1,5 @@
 # Toad Discovery Center
 
-The engine's `scan-index` command reuses a local, content-keyed corpus for raw
-caller and operand searches. See [the reporter guide](docs/bounded-evidence-reporters.md#repeated-caller-and-operand-searches).
-
 Reusable engineering kit for clean-room restorations of legally owned games.
 Projects bootstrapped from
 [`toad-discovery-center-template`](https://github.com/kibertoad/toad-discovery-center-template)

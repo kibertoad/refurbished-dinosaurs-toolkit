@@ -57,10 +57,6 @@ the PE import tables and the NE relocation tables in the reader.
 
 ### scientific-method-engine
 
-Repeated raw caller and operand searches can use its local, content-keyed
-`scan-index` SQLite corpus (ADR 0049). It preserves candidate-only meaning and
-source verification; original-derived indexes stay in `GAME_DIR`.
-
 Analyses instructions and emits `bounded-x86-v1` reports.
 
 - Decodes segmented 16-bit and i386 instructions with Capstone and takes their semantics from
@@ -69,6 +65,7 @@ Analyses instructions and emits `bounded-x86-v1` reports.
   call targets, callee graphs, function bounds and site ownership, and the call targets a function
   inventory lacks.
 - Parses PE32/i386 sources and derives their section mappings.
+- Keeps repeated raw caller and operand searches in a local, content-keyed `scan-index` SQLite corpus (ADR 0049). The rows stay raw candidates, the reader still verifies the source on every run, and indexes of an original stay in `GAME_DIR`.
 - Ships the shared Ghidra headless scripts as package data. `scientific-method-engine
   ghidra-scripts` prints their directory for `analyzeHeadless -scriptPath`.
 - Run directly, it trusts whatever relocation data a config supplies, so direct use is limited to
