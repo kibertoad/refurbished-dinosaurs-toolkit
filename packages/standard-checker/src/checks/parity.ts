@@ -1,12 +1,12 @@
 // The parity matrix. The parity rows live in parity/, one file per area, split by kind and then by
 // block where the limit requires it. PARITY.md holds the totals and is written by the check.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { collectPlaceholders } from "../code-files.ts";
 import type { Context } from "../context.ts";
 import { mayBeInterrupted, onlyEmulatedRuns, squashedInto } from "../evidence.ts";
-import { checkTestFiles, markdownTree, NEEDS_GAME, walk } from "../files.ts";
+import { checkTestFiles, markdownTree, NEEDS_GAME, readUtf8, walk } from "../files.ts";
 import { areaOf, compareIds, kindOf } from "../ids.ts";
 import { readText, tables } from "../markdown.ts";
 import { LINE_LIMIT } from "../standard.ts";
@@ -44,7 +44,7 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
   // A test file that reads the original's files through GAME_DIR says so with NEEDS_GAME. It runs
   // only on a maintainer's machine, so its validated rows need it in a run file in validation/; every other test
   // runs in CI.
-  const needsGame = (p: string) => existsSync(p) && NEEDS_GAME.test(readFileSync(p, "utf8"));
+  const needsGame = (p: string) => existsSync(p) && NEEDS_GAME.test(readUtf8(p));
   // A PARITY.md that still holds the rows is left alone until they have moved, so the check does not
   // overwrite them with the totals.
   const legacyParity =

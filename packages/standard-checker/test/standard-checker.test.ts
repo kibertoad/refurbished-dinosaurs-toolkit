@@ -13,6 +13,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1956,6 +1957,27 @@ test("a Markdown file over 1,000 lines is reported", (t) => {
   const { status, output } = run(root);
   assert.equal(status, 1);
   assert.match(output, /add_points\.md: has 1003 lines; the documentation standard allows 1000/);
+});
+
+test("the line limit reads a generated file as the run rewrote it", (t) => {
+  // The rewrite reads the stale file first, so a stale copy kept from that read would fail the limit.
+  const root = broken(t, (r) => writeFileSync(join(r, "spec", "index", "by-kind.md"), "Stale.\n".repeat(1001)));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /wrote spec\/index\/by-kind\.md/);
+  assert.doesNotMatch(output, /by-kind\.md: has \d+ lines/);
+});
+
+test("a linked directory is read as the directory it links to", (t) => {
+  // A link (a junction on Windows, which needs no privilege) inside spec/ to a directory outside the
+  // root, holding a file over the line limit. The limit finds it only by following the link.
+  const outside = mkdtempSync(join(tmpdir(), "doc-check-linked-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  writeFileSync(join(outside, "long.md"), "Line.\n".repeat(1001));
+  const root = broken(t, (r) => symlinkSync(outside, join(r, "spec", "linked"), "junction"));
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.match(output, /linked[\\/]long\.md: has 1001 lines/);
 });
 
 test("indexes and parity files split by area, kind and block exactly where the limit requires", (t) => {

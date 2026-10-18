@@ -4,11 +4,10 @@
 // A superseded finding or experiment cited in the rebuild's source is left to the source citation
 // check, which names what replaced it.
 
-import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { Context } from "../context.ts";
 import { EVIDENCE_KINDS, isSuperseded, whyMissing } from "../evidence.ts";
-import { walk } from "../files.ts";
+import { readUtf8, walk } from "../files.ts";
 import { idsIn, isAlias, kindOf } from "../ids.ts";
 import { DEV_RE } from "../standard.ts";
 import type { Deviation } from "./deviations.ts";
@@ -24,7 +23,7 @@ export function checkReferences(ctx: Context, deviations: Map<string, Deviation>
   const scan: Array<{ file: string; text: string; source?: boolean }> = [...ctx.codeFiles()];
   for (const dir of [parityDir, devDir])
     walk(dir, (f) => {
-      if (f.endsWith(".md")) scan.push({ file: f, text: readFileSync(f, "utf8") });
+      if (f.endsWith(".md")) scan.push({ file: f, text: readUtf8(f) });
     });
   for (const { file: f, text, source } of scan) {
     for (const x of idsIn(text)) {

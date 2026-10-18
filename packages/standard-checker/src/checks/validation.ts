@@ -7,9 +7,10 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "../context.ts";
+import { forgetText, writeUtf8 } from "../files.ts";
 import { readText, tables } from "../markdown.ts";
 import { VALIDATION_DIR } from "../standard.ts";
 import type { Parity } from "./parity.ts";
@@ -144,7 +145,7 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
       process.exit(2);
     }
     mkdirSync(runDir, { recursive: true });
-    writeFileSync(
+    writeUtf8(
       join(runDir, name),
       [
         "# Validation run",
@@ -170,6 +171,7 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
       const run = readRun(join(runDir, other), () => {});
       if (run && !listsUnseen(run)) {
         rmSync(join(runDir, other));
+        forgetText(join(runDir, other));
         console.log(`deleted ${VALIDATION_DIR}/${other}, which the new run replaces`);
       }
     }
