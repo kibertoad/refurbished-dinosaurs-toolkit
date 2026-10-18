@@ -1,6 +1,7 @@
 // Markdown and CSV: entries with front matter, sections, tables and value files.
 
 import { readFileSync } from "node:fs";
+import { readUtf8 } from "./files.ts";
 import type { Problem } from "./problems.ts";
 import type { Section, Table } from "./types.ts";
 import { parseYaml } from "./yaml.ts";
@@ -8,7 +9,7 @@ import { parseYaml } from "./yaml.ts";
 /** The number of lines of text, not counting the empty one after a final newline. */
 export const lineCount = (text: string) => (text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
 /** Reads a text file with CRLF line ends read as LF. */
-export const readText = (file: string) => readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+export const readText = (file: string) => readUtf8(file).replace(/\r\n/g, "\n");
 
 /**
  * Splits an entry's text, with LF line ends, into its front matter and body, or returns why it

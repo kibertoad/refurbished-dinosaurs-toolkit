@@ -7,16 +7,35 @@ import type { Context } from "./context.ts";
 /** A path with backslashes turned into forward slashes. */
 export const toSlash = (p: string) => p.replaceAll("\\", "/");
 
+// Several checks read the same spec files, and opening a file costs far more than keeping its
+// text, above all where an antivirus scans each open. A run is one process, so the cache lives as
+// long as the run.
+const texts = new Map<string, string>();
+
+/** The text of a file as UTF-8, read from disk once per run. */
+export function readUtf8(file: string) {
+  let text = texts.get(file);
+  if (text === undefined) {
+    text = readFileSync(file, "utf8");
+    texts.set(file, text);
+  }
+  return text;
+}
+
+/** Drops the cached text of a file the run writes or removes, so the next read sees the disk. */
+export const forgetText = (file: string) => texts.delete(file);
+
 /**
  * Calls fn with every file under dir, depth first in directory order, skipping build output,
  * dependencies and .git. A directory that does not exist has no files.
  */
 export function walk(dir: string, fn: (path: string) => void) {
   if (!existsSync(dir)) return;
-  for (const name of readdirSync(dir)) {
-    if (["bin", "obj", "dist", "node_modules", ".git", "artifacts"].includes(name)) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) walk(p, fn);
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (["bin", "obj", "dist", "node_modules", ".git", "artifacts"].includes(entry.name)) continue;
+    const p = join(dir, entry.name);
+    // A link is followed, as statSync does; any other entry's type comes with the listing.
+    if (entry.isSymbolicLink() ? statSync(p).isDirectory() : entry.isDirectory()) walk(p, fn);
     else fn(p);
   }
 }

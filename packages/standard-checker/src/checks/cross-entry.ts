@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "../context.ts";
 import { isSuperseded, whyMissing } from "../evidence.ts";
+import { readUtf8 } from "../files.ts";
 import { asList, idsIn } from "../ids.ts";
 import { readText } from "../markdown.ts";
 import { KINDS } from "../standard.ts";
@@ -111,7 +112,7 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
       }
     };
     if (dataDirs.length > 0) {
-      for (const [, e] of entries) if (e.kind !== "BLD") checkPaths(e.file, readFileSync(e.file, "utf8"));
+      for (const [, e] of entries) if (e.kind !== "BLD") checkPaths(e.file, readUtf8(e.file));
       for (const [term, text] of glossary) if (glossaryFiles.has(term)) checkPaths(glossaryFiles.get(term)!, text);
     }
   }

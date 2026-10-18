@@ -17,10 +17,10 @@
 // with the extension of a source file (.cs, .fs, .ts, .mjs, .js, .ps1) that some file in a
 // --rebuild directory has. The generated indexes in spec/index/ are left out.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, join, posix, sep } from "node:path";
 import type { Context } from "../context.ts";
-import { toSlash, walk } from "../files.ts";
+import { readUtf8, toSlash, walk } from "../files.ts";
 
 const EXTENSIONS = "(?:cs|fs|ts|mjs|js|ps1)";
 const SOURCE = new RegExp(`\\.${EXTENSIONS}$`);
@@ -82,7 +82,7 @@ export function checkRebuildPaths(ctx: Context) {
   walk(specDir, (file) => {
     if (!file.endsWith(".md") || file.startsWith(index)) return;
     const source = sources.has(file);
-    const lines = readFileSync(file, "utf8").replace(/\r\n?/g, "\n").split("\n");
+    const lines = readUtf8(file).replace(/\r\n?/g, "\n").split("\n");
     lines.forEach((line, i) => {
       const found = new Set<string>();
       for (const [path] of line.matchAll(PATH_RE)) {

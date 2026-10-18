@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import { dirname, join, relative } from "node:path";
 import { baseTarget, gitIn, revParse } from "../checks/base.ts";
 import type { Context } from "../context.ts";
-import { markdownTree, toSlash, walk } from "../files.ts";
+import { forgetText, markdownTree, toSlash, walk } from "../files.ts";
 import { lineCount, readText } from "../markdown.ts";
 import { LINE_LIMIT, VALIDATION_DIR } from "../standard.ts";
 
@@ -37,10 +37,12 @@ export function writeGenerated(ctx: Context, generated: Map<string, string>) {
     for (const p of stale) {
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, generated.get(p)!);
+      forgetText(p);
       console.log(`wrote ${toSlash(relative(repoDir, p))}`);
     }
     for (const f of extra) {
       rmSync(f);
+      forgetText(f);
       console.log(`removed ${toSlash(relative(repoDir, f))}`);
     }
     // Directories left empty by a file that moved.

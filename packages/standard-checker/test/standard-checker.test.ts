@@ -1958,6 +1958,15 @@ test("a Markdown file over 1,000 lines is reported", (t) => {
   assert.match(output, /add_points\.md: has 1003 lines; the documentation standard allows 1000/);
 });
 
+test("the line limit reads a generated file as the run rewrote it", (t) => {
+  // The rewrite reads the stale file first, so a stale copy kept from that read would fail the limit.
+  const root = broken(t, (r) => writeFileSync(join(r, "spec", "index", "by-kind.md"), "Stale.\n".repeat(1001)));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /wrote spec\/index\/by-kind\.md/);
+  assert.doesNotMatch(output, /by-kind\.md: has \d+ lines/);
+});
+
 test("indexes and parity files split by area, kind and block exactly where the limit requires", (t) => {
   const ids = Array.from({ length: 1100 }, (_, i) => `RULE-SCORE-${String(i + 2).padStart(3, "0")}`);
   const root = broken(t, (r) => {
