@@ -59,7 +59,7 @@ from typing import Any
 FEATURES = ["journal", "ops", "if_state_seq", "request_ids", "breakpoint_once", "quit", "write_expect", "run", "program_stops", "build", "screen_attrs", "strict_match", "check_files", "load_folders"]
 # The fields of a control request's body; rust-dos refuses any other.
 CONTROL_FIELDS = {"count", "until", "until_ms", "timeout_ms", "command", "stop_at_entry", "queue", "wait"}
-BUILD = {"commit": "746cc86dcf24157c48dc05c289f6bc0bb350d469", "commit_short": "746cc86", "dirty": False}
+BUILD = {"commit": "5a23d2cd400a8f9986d278ba97dc52b270b2ac14", "commit_short": "5a23d2c", "dirty": False}
 SEGMENT = 0x05AA
 
 
@@ -180,7 +180,7 @@ class Machine:
             if "no-version" in self.modes:
                 raise Refusal(404, {"error": "not found"})
             features = [f for f in FEATURES if f"no-{f.replace('_', '-')}" not in self.modes]
-            return 200, {"name": "rust-dos", "version": "1.7.2", "build": BUILD, "api_version": 2 if "api-2" in self.modes else 1, "instance": "5eed", "features": features}
+            return 200, {"name": "rust-dos", "version": "1.7.5", "build": BUILD, "api_version": 2 if "api-2" in self.modes else 1, "instance": "5eed", "features": features}
         if path == "/api/status":
             quiescent = self.paused and not self.pending_ops()
             return 200, {"paused": self.paused, "stop": self.stop if self.paused else None, "quiescent": quiescent, "program": "" if self.program is None else self.program["name"], "icount": self.icount, "seq": len(self.journal), **self.meta()}
@@ -295,7 +295,7 @@ class Machine:
             self.quiet_or_refuse("save")
         files = self.files() if body.get("check_files") else None
         header: dict[str, Any] = {
-            "version": "1.7.2",
+            "version": "1.7.5",
             "emulated_ns": self.icount * 1000,
             "media": self.media(files),
             "memsize": 16,
@@ -317,7 +317,7 @@ class Machine:
         entry = self.append("state_saved", req, tag, fields, changes=False)
         if "drop-save-reply" in self.modes:
             return -1, None
-        return 200, {"saved": body["path"], "format": 1, "emulator": "1.7.2", "header": header, "seq": entry["seq"], **self.meta()}
+        return 200, {"saved": body["path"], "format": 1, "emulator": "1.7.5", "header": header, "seq": entry["seq"], **self.meta()}
 
     def load_differences(self, state: dict[str, Any], check_files: bool) -> list[str]:
         differences = []
@@ -372,7 +372,7 @@ class Machine:
         self.drives = state["drives"]
         self.cycles = state["cycles"]
         self.append("state_loaded", req, tag, {"path": str(path), "strict_match": strict, "differences": differences})
-        reply: dict[str, Any] = {"loaded": str(path), "format": 1, "emulator": "1.7.2", "header": state["header"]}
+        reply: dict[str, Any] = {"loaded": str(path), "format": 1, "emulator": "1.7.5", "header": state["header"]}
         if folders:
             reply["folders"] = {letter.upper(): folder for letter, folder in folders.items()}
         if "wrong-folders" in self.modes:

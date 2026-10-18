@@ -492,11 +492,11 @@ API with the standard library and imports nothing of rust-dos.
 The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
 `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`, `quit`, `build`,
 `strict_match` and `check_files` (`RUST_DOS_FEATURES`). The supported release is
-[v1.7.2](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.2)
-(`RUST_DOS_PINNED_TAG`), commit `746cc86dcf24157c48dc05c289f6bc0bb350d469`.
-Download `rust-dos-v1.7.2-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
-The archive's SHA-256 is `2ca58dabaf1c392485418c180ff2728c5e8a76a970bf150890bab3b978f88da8`;
-the executable's is `310de9a912a4874cfceccb2aead71b8da39315aa059dbb5a108f86feb3f73ee4`
+[v1.7.5](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.5)
+(`RUST_DOS_PINNED_TAG`), commit `5a23d2cd400a8f9986d278ba97dc52b270b2ac14`.
+Download `rust-dos-v1.7.5-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
+The archive's SHA-256 is `f4767c17a166ae1331bc7736a7877e5428c88c413471ec16e04d6decafd11201`;
+the executable's is `1635427ad8eaddd08e11ca31c9fc81cabff5c264bfaa708a1eca477d54184830`
 (`RUST_DOS_PINNED_SHA256`). These hashes apply to that ZIP, not the Win7, MSI or libretro builds.
 Pass the executable pin explicitly; `emulator_sha256=None` still permits other builds that
 satisfy the API and feature checks, and the session records their actual hash.

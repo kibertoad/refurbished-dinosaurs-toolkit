@@ -36,7 +36,7 @@ command-line option for them. Read in its source and run against the pinned exec
    `emulator_arguments` cannot carry them. The session takes no other configuration-file settings
    from the caller; a further setting gets its own typed field the same way, when a request shows
    a need for it.
-3. The session refuses, before anything starts, a value rust-dos v1.7.2 would not take, an HDMA for
+3. The session refuses, before anything starts, a value rust-dos v1.7.2 to v1.7.5 would not take, an HDMA for
    a model without a 16-bit channel, and an Ultrasound that shares the Sound Blaster's base port,
    IRQ or a DMA channel. A run that wants a Sound Blaster on IRQ 5 moves the Ultrasound or sets
    `ultrasound=None`.

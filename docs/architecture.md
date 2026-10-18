@@ -160,7 +160,7 @@ Owns emulator debugger sessions for a restoration's research tooling, on DOSBox-
   contract and hashes of modules the caller names, which must be imported before the session
   starts. A log is read against the contract it recorded and the outcome the caller expected,
   and reading names the check that failed.
-- Runs rust-dos as the preferred backend (`RustDosSession`), targeting the pinned upstream v1.7.2
+- Runs rust-dos as the preferred backend (`RustDosSession`), targeting the pinned upstream v1.7.5
   Windows x86-64 release, through its HTTP debug server, which the
   package speaks with the standard library. It takes the same run lock, C: and event log, refuses
   a server without API version 1 and the features it relies on, starts the target stopped at its
