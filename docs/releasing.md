@@ -10,9 +10,10 @@ package is released, and at what version, depends on the ecosystem.
 
 1. A pull request that changes one of them adds a changeset with `pnpm changeset`, choosing the
    package and the bump, and describing the change for the changelog.
-2. When it merges, `release-npm.yml` runs `changesets/action`, which opens or updates the
-   "Release Packages" pull request with the new versions and `CHANGELOG.md` entries. The workflow
-   merges that pull request and dispatches itself.
+2. When it merges, `release-npm.yml` runs `changeset version`, which applies the pending
+   changesets to the versions and `CHANGELOG.md` entries. The workflow pushes that commit
+   ("chore: update versions") straight to `main` and dispatches itself. There is no release pull
+   request, so no `pull_request` checks start for it.
 3. The dispatched run finds no pending changesets, builds the packages, and `changeset publish`
    publishes each version not yet on npm, with provenance, and pushes its
    `<package>@<version>` tag.
@@ -74,10 +75,8 @@ the upload skips the existing version, and the tag and release are created.
 ### Repository
 
 - Labels: create `release:major`, `release:minor`, `release:patch` and `release:skip`.
-- Settings > Actions > General: allow GitHub Actions to create and approve pull requests, so
-  Changesets can open the release pull request.
-- The auto-merge step uses `gh pr merge --admin`, so branch protection on `main` must allow the
-  workflow's token to merge (as in `kibertoad/opinionated-machine`).
+- `release-npm.yml` pushes the version commit to `main` with the workflow's token, so branch
+  protection or a ruleset on `main`, if one is added, must let GitHub Actions push.
 - Environments: create `pypi` and `nuget`. Add protection rules there if releases should wait for
   approval.
 - Variables: set `NUGET_USER` to the nuget.org account that owns the packages.

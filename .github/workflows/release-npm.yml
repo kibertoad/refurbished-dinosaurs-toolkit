@@ -1,9 +1,10 @@
 name: Release npm packages
 
-# Changesets opens a "Release Packages" pull request that applies the pending changesets to the
-# package versions and changelogs. The workflow merges it, and the run it dispatches publishes
-# every package whose version is not on npm yet, through npm trusted publishing (OIDC) with
-# provenance. No npm token is stored.
+# A run with pending changesets applies them to the package versions and changelogs, pushes that
+# commit to main and dispatches itself. The dispatched run finds no changesets and publishes every
+# package whose version is not on npm yet, through npm trusted publishing (OIDC) with provenance.
+# No npm token is stored. There is no release pull request: the pull_request checks it started
+# failed at startup, because the workflow merged it seconds after opening it.
 on:
   push:
     branches:
@@ -33,7 +34,6 @@ jobs:
     permissions:
       id-token: write
       contents: write
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,21 +58,32 @@ jobs:
           cp LICENSE packages/executable-reader/LICENSE
           cp LICENSE packages/standard-checker/LICENSE
 
-      - name: Create Release Pull Request or Publish
-        id: changesets
+      # changeset version exits 1 when nothing is pending, so look for changeset files first.
+      - name: Version pending changesets
+        id: version
+        run: |
+          if ! find .changeset -maxdepth 1 -name '*.md' ! -name README.md | grep -q .; then
+            echo "versioned=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pnpm changeset version
+          git add -A .changeset packages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update versions"
+          # A push made with this token starts no workflow, so the run dispatches the publish itself.
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+          git pull --rebase "$remote" main
+          git push "$remote" HEAD:main
+          gh api --method POST "/repos/$REPO/dispatches" -f 'event_type=release'
+          echo "versioned=true" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+
+      - name: Publish
+        if: steps.version.outputs.versioned == 'false'
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           publish-script: pnpm run ci:publish
-          pr-title: "Release Packages"
-          commit-message: "chore: update versions"
-
-      - name: Auto-merge Changesets PR
-        if: steps.changesets.outputs.has-changesets == 'true'
-        run: |
-          gh pr merge --squash --admin "$PR_NUMBER"
-          gh api --method POST /repos/$REPO/dispatches -f 'event_type=release'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.changesets.outputs.pr-number }}

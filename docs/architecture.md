@@ -215,7 +215,7 @@ through matching version numbers.
 
 | Ecosystem | Version decided by | Published by | Authentication |
 |---|---|---|---|
-| npm | a Changesets file in the pull request | `changesets/action` release pull request, then `changeset publish` | npm trusted publishing (OIDC), with provenance |
+| npm | a Changesets file in the pull request | `changeset version` pushed to `main`, then `changeset publish` | npm trusted publishing (OIDC), with provenance |
 | PyPI | a `release:major`, `release:minor` or `release:patch` label on the merged pull request | a path-gated workflow on `main` | PyPI trusted publishing (OIDC) |
 | NuGet | the same labels | a path-gated workflow on `main` | NuGet trusted publishing (OIDC) |
 
