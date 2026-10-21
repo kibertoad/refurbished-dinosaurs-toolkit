@@ -11,7 +11,7 @@ byte for byte. Anything else (partial, notListed, mismatched) skips bincue-split
 the caller asks for manual validation. `--bincue-validated-by-hand` uploads it anyway, and is for
 when the user has validated the image and said so.
 
-Files up to 300 MB go through `cf r2 objects put`. Bigger ones go through R2's S3 API with
+Files up to 300 MB go through `cf r2 buckets objects upload`. Bigger ones go through R2's S3 API with
 `aws s3 cp`, using an account token minted for the run with a 4 hour expiry and deleted when the
 run ends. The token value is never printed. Objects whose remote etag already equals the local
 file's are skipped, so a failed run can be resumed by running it again.
@@ -40,7 +40,7 @@ from pathlib import Path
 BUCKET = os.environ.get("GOLDEN_DISCS_BUCKET", "golden-reference-disks")
 DISC_ARCHIVER = os.environ.get("DISC_ARCHIVER") or shutil.which("disc-archiver") or "disc-archiver"
 DEFAULT_DAT = os.environ.get("REDUMP_DAT")
-PUT_CAP = 300 * 1000 * 1000  # cf's objects put answers 413 above about 300 MB
+PUT_CAP = 300 * 1000 * 1000  # cf's objects upload answers 413 above about 300 MB
 PART = 8 * 1024 * 1024  # aws s3 cp's default multipart chunk
 # Permission group ids (cf accounts tokens permission-groups list).
 R2_STORAGE_WRITE = "bf7481a1826f439697cb59a20b22293e"  # account scoped
@@ -123,7 +123,7 @@ def key_of(disc: Path, path: Path) -> str:
 
 
 def remote_objects(prefix: str) -> dict[str, dict]:
-    out = json.loads(cf("r2", "objects", "list", "--bucket-name", BUCKET, "--prefix", prefix, "--per-page", "1000") or "[]")
+    out = json.loads(cf("r2", "buckets", "objects", "list", "--bucket-name", BUCKET, "--prefix", prefix, "--per-page", "1000") or "[]")
     if isinstance(out, dict):
         out = out.get("result", out.get("objects", []))
     return {o["key"]: o for o in out}
@@ -239,7 +239,7 @@ def upload(disc: Path, files: list[Path], dry_run: bool) -> None:
         key = key_of(disc, path)
         log(f"put {key} ({path.stat().st_size:,} bytes)")
         if not dry_run:
-            cf("r2", "objects", "put", key, "--bucket-name", BUCKET, "--file", str(path),
+            cf("r2", "buckets", "objects", "upload", key, "--bucket-name", BUCKET, "--file", str(path),
                "--cf-r2-storage-class", "InfrequentAccess", "--content-type", content_type(path), "-q")
     if not big:
         return

@@ -51,7 +51,7 @@ It prints JSON: the ISO 9660 volume descriptor (volume ID, publisher, applicatio
 
 Then check the name is free. Run cf from the scratchpad, since it drops a `.cloudflare/` folder in its working directory:
 
-- `cf r2 objects list --bucket-name "$GOLDEN_DISCS_BUCKET" --prefix "<Name (Year)>/"` returns `[]`, and `"$GOLDEN_DISCS_ROOT/<Name (Year)>"` doesn't exist. If either does, stop and ask before touching it: it may be the same disc ripped before, or another edition that needs region/languages in its name.
+- `cf r2 buckets objects list --bucket-name "$GOLDEN_DISCS_BUCKET" --prefix "<Name (Year)>/"` returns `[]`, and `"$GOLDEN_DISCS_ROOT/<Name (Year)>"` doesn't exist. If either does, stop and ask before touching it: it may be the same disc ripped before, or another edition that needs region/languages in its name.
 
 Tell the user the name you settled on and the evidence for each part (one line each) and carry on without waiting for an answer. Record it in `rip-manifest.json` after the rip, under `source.handFilled.identification`: the folder name, and for the title, year and disc number which file or field each came from.
 
@@ -91,7 +91,7 @@ Add `--dry-run` first if anything about the folder looks unusual. What the scrip
 
 1. Gate: runs `disc-archiver check --input bincue-split/<Name>.cue --dat <DAT>` on the files as they are now on disk. bincue-split counts as a known good rip only when the status is `matched`: every track file and the cue sheet equal one Redump entry's by size, CRC32, MD5 and SHA-1, the entry lists nothing else, and every .bin/.cue in the folder was compared. `partial` (tracks match, cue differs), `notListed` and `mismatched` all fail the gate.
 2. Uploads `rip-manifest.json`, `PERSONAL-ARCHIVE-ONLY.txt` and `archival/` always, plus all of `bincue-split/` when the gate passed. Storage class InfrequentAccess; content types `application/json` for the manifest, `text/plain` for .txt, `application/octet-stream` for everything else.
-3. Files up to 300 MB go through `cf r2 objects put` (it answers 413 above that). Bigger ones (`.scram`, large data tracks) go through R2's S3 API: the script mints a short-lived account token with `cf accounts tokens create` (4 hour expiry; "Workers R2 Storage Write" on the account plus "Bucket Item Read" and "Write" on the bucket, since account scope alone gets Unauthorized from S3), waits until S3 accepts it, runs `aws s3 cp --storage-class STANDARD_IA`, then deletes the token even when an upload fails. Never print or log the token value.
+3. Files up to 300 MB go through `cf r2 buckets objects upload` (it answers 413 above that). Bigger ones (`.scram`, large data tracks) go through R2's S3 API: the script mints a short-lived account token with `cf accounts tokens create` (4 hour expiry; "Workers R2 Storage Write" on the account plus "Bucket Item Read" and "Write" on the bucket, since account scope alone gets Unauthorized from S3), waits until S3 accepts it, runs `aws s3 cp --storage-class STANDARD_IA`, then deletes the token even when an upload fails. Never print or log the token value.
 4. Skips objects whose remote etag already matches, so rerunning resumes a failed upload.
 5. Verifies every uploaded file against the bucket listing (size, etag, storage class) and lists any extra keys under the folder.
 
@@ -121,9 +121,9 @@ If there are no historical rips, the other ways to settle it are a second dump o
 The bucket root `README.md` has a Discs table with one row per disc. In the scratchpad, fetch it, add the row, put it back:
 
 ```sh
-cf r2 objects get README.md --bucket-name "$GOLDEN_DISCS_BUCKET" > README.md
+cf r2 buckets objects get README.md --bucket-name "$GOLDEN_DISCS_BUCKET" > README.md
 # edit
-cf r2 objects put README.md --bucket-name "$GOLDEN_DISCS_BUCKET" --file README.md --content-type text/markdown --cf-r2-storage-class InfrequentAccess -q
+cf r2 buckets objects upload README.md --bucket-name "$GOLDEN_DISCS_BUCKET" --file README.md --content-type text/markdown --cf-r2-storage-class InfrequentAccess -q
 ```
 
 Row columns: Folder, Edition (region, publisher/catalogue, track layout), Redump (`Matches: SHA-1 <data track sha1>, write offset, errors` or `Not listed. Nearest: ...`), Notes (protection, errors, anything done by hand, ring codes if read). For a cured image, say in Notes what was patched and from what, and point at the patch note. For a held-back image, say in Notes: "`bincue-split/` not uploaded: no exact Redump match, awaiting manual validation."
