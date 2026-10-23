@@ -7,8 +7,10 @@
 `upload` always sends rip-manifest.json, PERSONAL-ARCHIVE-ONLY.txt and archival/ (without
 redumper's split .bin/.cue copies). bincue-split/ goes up only when `disc-archiver check --dat`
 gives `matched` for it, which means every track file and the cue sheet equal one Redump entry
-byte for byte. Anything else (partial, notListed, mismatched) skips bincue-split/ and exits 4 so
-the caller asks for manual validation. `--bincue-validated-by-hand` uploads it anyway, and is for
+byte for byte, or `partial` with every track file matching and a cue sheet that equals the
+entry's once its FILE names, line endings and an all-zero CATALOG line are Redump's. Anything else
+(another partial, notListed, mismatched) skips bincue-split/ and exits 4 so the caller asks for
+manual validation. `--bincue-validated-by-hand` uploads it anyway, and is for
 when the user has validated the image and said so.
 
 Files up to 300 MB go through `cf r2 buckets objects upload`. Bigger ones go through R2's S3 API with
@@ -30,12 +32,16 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import zipfile
+import zlib
 from pathlib import Path
+from xml.etree import ElementTree
 
 BUCKET = os.environ.get("GOLDEN_DISCS_BUCKET", "golden-reference-disks")
 DISC_ARCHIVER = os.environ.get("DISC_ARCHIVER") or shutil.which("disc-archiver") or "disc-archiver"
@@ -136,8 +142,77 @@ def find_cue(disc: Path) -> Path:
     return cues[0]
 
 
+def dat_cue(dat: Path, game: str) -> dict | None:
+    """The cue sheet rom of ``game`` in the DAT (.dat or a zip of one): its size and hashes."""
+    if dat.suffix.lower() == ".zip":
+        with zipfile.ZipFile(dat) as z:
+            names = [n for n in z.namelist() if not n.endswith("/")]
+            if len(names) != 1:
+                raise SystemExit(f"{dat} holds {len(names)} files, expected one DAT")
+            data = z.read(names[0])
+    else:
+        data = dat.read_bytes()
+    for entry in ElementTree.fromstring(data).iter("game"):
+        if entry.get("name") != game:
+            continue
+        for rom in entry.iter("rom"):
+            if rom.get("name", "").lower().endswith(".cue"):
+                return {"size": int(rom.get("size", -1)), "crc": rom.get("crc", "").lower(),
+                        "md5": rom.get("md5", "").lower(), "sha1": rom.get("sha1", "").lower()}
+    return None
+
+
+def cue_variants(sheet: bytes, renames: dict[str, str]) -> list[tuple[str, bytes]]:
+    """The cue sheet as Redump would write it, with what was changed to get there.
+
+    The archiver names track files after --name, Redump after its entry, so the FILE lines get the
+    DAT's names. Redump writes CRLF. An all-zero CATALOG means the disc has no media catalog number;
+    some drives report it as zeros, others not at all, so the line is tried both present and absent.
+    """
+    changed = []
+    if renames:
+        theirs = {mine.encode(): new.encode() for mine, new in renames.items()}
+        pattern = re.compile(b'FILE "(' + b"|".join(re.escape(mine) for mine in theirs) + b')"')
+        sheet = pattern.sub(lambda m: b'FILE "' + theirs[m.group(1)] + b'"', sheet)
+        changed.append("FILE names")
+    crlf = sheet.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    if crlf != sheet:
+        changed.append("line endings")
+    zero = b"CATALOG 0000000000000\r\n"
+    out = [(", ".join(changed), crlf)]
+    if crlf.startswith(zero):
+        out.append((", ".join(changed + ["no all-zero CATALOG line"]), crlf[len(zero):]))
+    elif not re.match(rb"CATALOG ", crlf):
+        out.append((", ".join(changed + ["an all-zero CATALOG line"]), zero + crlf))
+    return out
+
+
+def cue_equal_after(cue: Path, report: dict, dat: Path) -> str | None:
+    """When every track matched and only the cue sheet did not: what the cue differs from the
+    DAT's in, if it is only FILE names, line endings and an all-zero CATALOG; otherwise None."""
+    tracks = [f for f in report["files"] if f["kind"] == "track"]
+    if not report.get("game") or not tracks or not all(f["matched"] for f in tracks):
+        return None
+    wanted = dat_cue(dat, report["game"])
+    if wanted is None:
+        return None
+    renames = {Path(d["path"]).name: d["datName"] for d in report.get("nameDifferences", [])
+               if d.get("datName") and Path(d["path"]).suffix.lower() != ".cue"}
+    for changed, variant in cue_variants(cue.read_bytes(), renames):
+        if (len(variant) == wanted["size"] and f"{zlib.crc32(variant):08x}" == wanted["crc"]
+                and hashlib.md5(variant).hexdigest() == wanted["md5"]
+                and hashlib.sha1(variant).hexdigest() == wanted["sha1"]):
+            return changed or "nothing"
+    return None
+
+
 def gate(disc: Path, dat: Path | None) -> dict:
-    """Compare bincue-split/ with the Redump DAT now, from the files on disk."""
+    """Compare bincue-split/ with the Redump DAT now, from the files on disk.
+
+    ``matched`` passes. So does ``partial`` when every track file matched and the cue sheet equals
+    the DAT's once its FILE names, line endings and an all-zero CATALOG line are made Redump's: those
+    say nothing about the disc's bytes.
+    """
     if dat is None:
         raise SystemExit("no Redump DAT: pass --dat or set REDUMP_DAT")
     if not dat.is_file():
@@ -153,20 +228,22 @@ def gate(disc: Path, dat: Path | None) -> dict:
     report = json.loads(done.stdout[start:])["redump"]
     on_disk = {p.name for p in cue.parent.iterdir() if p.suffix.lower() in (".bin", ".cue")}
     compared = {Path(f["path"]).name for f in report["files"]}
+    cue_only = cue_equal_after(cue, report, dat) if report["status"] == "partial" else None
     exact = (
-        report["status"] == "matched"
-        and all(f["matched"] for f in report["files"])
+        (report["status"] == "matched" and all(f["matched"] for f in report["files"]) or cue_only is not None)
         and on_disk == compared
     )
     return {"exact": exact, "status": report["status"], "game": report.get("game"),
             "differences": report.get("differences", []), "candidates": report.get("candidates", []),
-            "unlisted": sorted(on_disk - compared)}
+            "unlisted": sorted(on_disk - compared), "cueEqualAfter": cue_only}
 
 
 def print_gate(result: dict) -> None:
     log(f"redump: {result['status']}" + (f" ({result['game']})" if result["game"] else ""))
     for d in result["differences"]:
         log(f"  {d}")
+    if result["cueEqualAfter"]:
+        log(f"  every track matches; the cue sheet equals the DAT's after Redump's {result['cueEqualAfter']}")
     for c in result["candidates"][:4]:
         log(f"  nearest: {c.get('name', c)}")
     if result["unlisted"]:
