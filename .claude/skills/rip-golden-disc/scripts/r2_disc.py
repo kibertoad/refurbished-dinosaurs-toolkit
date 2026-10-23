@@ -13,6 +13,11 @@ entry's once its FILE names, line endings and an all-zero CATALOG line are Redum
 manual validation. `--bincue-validated-by-hand` uploads it anyway, and is for
 when the user has validated the image and said so.
 
+A rip of a recordable disc (CD-R/RW) is never uploaded: `gate` and `upload` refuse it with exit 5,
+and nothing overrides that. The disc counts as recordable when redumper saved an ATIP for it
+(archival/*.atip; pressed discs have none) or the manifest records it under
+source.handFilled.recordableMedia.
+
 Files up to 300 MB go through `cf r2 buckets objects upload`. Bigger ones go through R2's S3 API with
 `aws s3 cp`, using an account token minted for the run with a 4 hour expiry and deleted when the
 run ends. The token value is never printed. Objects whose remote etag already equals the local
@@ -22,7 +27,8 @@ Settings come from the environment: R2_ACCOUNT_ID (default: the only account `cf
 shows), GOLDEN_DISCS_BUCKET (default golden-reference-disks), DISC_ARCHIVER (default:
 disc-archiver on PATH) and REDUMP_DAT (the default for --dat).
 
-Exit codes: 0 done, 1 failed, 4 done but bincue-split/ held back for manual validation.
+Exit codes: 0 done, 1 failed, 4 done but bincue-split/ held back for manual validation, 5 the
+source disc is a CD-R/RW and nothing was uploaded.
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ R2_STORAGE_WRITE = "bf7481a1826f439697cb59a20b22293e"  # account scoped
 R2_BUCKET_ITEM_READ = "6a018a9f2fc74eb6b293b0c548f38b39"  # bucket scoped
 R2_BUCKET_ITEM_WRITE = "2efd5506f9c8494dacb1fa10a3e7d5b6"  # bucket scoped
 EXIT_MANUAL = 4
+EXIT_RECORDABLE = 5
 
 
 def log(line: str) -> None:
@@ -133,6 +140,26 @@ def remote_objects(prefix: str) -> dict[str, dict]:
     if isinstance(out, dict):
         out = out.get("result", out.get("objects", []))
     return {o["key"]: o for o in out}
+
+
+def recordable(disc: Path) -> str | None:
+    """Why the rip is of a CD-R/RW, or None for a pressed disc.
+
+    redumper saves <name>.atip only when the drive returns an ATIP, which only recordable discs
+    carry. The descriptor has the top bit of its bytes 0 and 2 set (MMC READ TOC format 0100b).
+    """
+    for atip in sorted((disc / "archival").glob("*.atip")):
+        data = atip.read_bytes()
+        length = int.from_bytes(data[:2], "big") if len(data) >= 2 else 0
+        d = data[4:2 + length]
+        if len(d) >= 11 and d[0] & 0x80 and d[2] & 0x80:
+            kind = "CD-RW" if d[2] & 0x40 else "CD-R"
+            return f"archival/{atip.name} holds the disc's ATIP ({kind}, lead-in {d[4]:02d}:{d[5]:02d}:{d[6]:02d})"
+    manifest = json.loads((disc / "rip-manifest.json").read_text(encoding="utf-8"))
+    marked = manifest.get("source", {}).get("handFilled", {}).get("recordableMedia", {})
+    if marked.get("recordable"):
+        return "rip-manifest.json records it under source.handFilled.recordableMedia"
+    return None
 
 
 def find_cue(disc: Path) -> Path:
@@ -373,6 +400,11 @@ def main() -> int:
                         help="upload bincue-split/ although the DAT gives no exact match; only on the user's say-so")
     args = parser.parse_args()
     disc = args.disc.resolve()
+
+    if args.command in ("gate", "upload") and (why := recordable(disc)):
+        log(f"the source disc is recordable media, not a pressed retail disc: {why}")
+        log("CD-R/RW rips are kept locally and never go to the golden reference bucket; nothing uploaded")
+        return EXIT_RECORDABLE
 
     if args.command == "gate":
         result = gate(disc, args.dat)
