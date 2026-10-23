@@ -1,10 +1,13 @@
-"""Collect evidence of a disc's title, publisher, year and disc number.
+"""Collect evidence of a disc's title, publisher, year and disc number, and
+whether it is recordable media (CD-R/RW) rather than a pressed disc.
 
-Reads the mounted file system and the ISO 9660 volume descriptor and prints
-JSON. It decides nothing; the skill weighs the evidence.
+Reads the mounted file system, the ISO 9660 volume descriptor and, on Windows,
+the disc's ATIP, and prints JSON. It decides nothing about the name; the skill
+weighs the evidence.
 
     python -I disc_identity.py D:
     python -I disc_identity.py /dev/sr0 --root /media/cdrom
+    python -I disc_identity.py --atip-file "<disc>/archival/<name>.atip"
 """
 
 import argparse
@@ -27,6 +30,9 @@ REDIST_DIRS = {"directx", "directx5", "directx6", "directx7", "dx", "dx5", "dx6"
 REDIST_COMPANY = re.compile(r"(?i)microsoft|installshield|apple|intel|adobe|wise solutions|realnetworks")
 PRINTABLE = re.compile(r"[^\x20-\x7e\xa9]+")
 INI_KEYS = re.compile(r"(?im)^\s*(AppName|Application|Title|Product|ProductName|Company|Publisher|Version|label|open|icon)\s*=\s*(.+?)\s*$")
+IOCTL_CDROM_READ_TOC_EX = 0x24054
+TOC_FULL, TOC_ATIP = 2, 4
+ERROR_NOT_READY = 21
 
 
 def device_path(device):
@@ -70,7 +76,75 @@ def pvd(device):
         "application": text(b[574:702]),
         "created": date(b[813:830]),
         "modified": date(b[830:847]),
+        # Image tools stamp their name here (UltraISO does), which marks a disc built from a
+        # rebuilt image rather than the publisher's master.
+        "applicationUse": [s.strip() for s in re.findall(r"[\x20-\x7e]{4,}", b[883:1395].decode("latin-1")) if len(s.strip()) >= 4],
     }
+
+
+def decode_atip(data):
+    """The ATIP descriptor of a READ TOC format 0100b answer (MMC-3), or None when it holds none.
+
+    Only recordable discs have an ATIP: the drive reads it from the pregroove a blank is made
+    with. A pressed disc has no pregroove, so the drive refuses the read or answers empty.
+    """
+    if len(data) < 4:
+        return None
+    length = int.from_bytes(data[0:2], "big")  # counts the bytes after these two
+    d = data[4:2 + length]
+    if len(d) < 11 or not d[0] & 0x80 or not d[2] & 0x80:  # MMC sets the top bit of both
+        return None
+
+    def msf(b):
+        return f"{b[0]:02d}:{b[1]:02d}:{b[2]:02d}"
+
+    return {
+        "discType": "CD-RW" if d[2] & 0x40 else "CD-R",
+        "discSubType": (d[2] >> 3) & 7,
+        "leadInStart": msf(d[4:7]),
+        "lastLeadOutStart": msf(d[8:11]),
+        "raw": data[:2 + length].hex(),
+    }
+
+
+def read_toc_ex(device, toc_format):
+    """IOCTL_CDROM_READ_TOC_EX: the answer's bytes, or None and the Windows error."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = w.HANDLE
+    k.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+    handle = k.CreateFileW(device_path(device), 0x80000000, 3, None, 3, 0, None)  # GENERIC_READ, share read/write, OPEN_EXISTING
+    if handle in (None, w.HANDLE(-1).value):
+        return None, ctypes.get_last_error()
+    try:
+        request = (ctypes.c_ubyte * 4)(toc_format | 0x80, 0, 0, 0)  # Format in the low bits, Msf set
+        out = (ctypes.c_ubyte * 2048)()
+        got = w.DWORD()
+        if not k.DeviceIoControl(w.HANDLE(handle), IOCTL_CDROM_READ_TOC_EX, request, 4, out, 2048, ctypes.byref(got), None):
+            return None, ctypes.get_last_error()
+        return bytes(out[:got.value]), 0
+    finally:
+        k.CloseHandle(w.HANDLE(handle))
+
+
+def media(device):
+    """Whether the disc in the drive is recordable, from its ATIP."""
+    if os.name != "nt":
+        return {"recordable": None,
+                "note": "ATIP is read on Windows only; after the rip, run --atip-file on archival/<name>.atip (redumper writes it only when the disc has one)"}
+    data, error = read_toc_ex(device, TOC_ATIP)
+    atip = decode_atip(data) if data else None
+    if atip:
+        return {"recordable": True, "atip": atip}
+    # A refused ATIP read means a pressed disc only when the same path can read the disc at all.
+    toc, toc_error = read_toc_ex(device, TOC_FULL)
+    if not toc:
+        return {"recordable": None,
+                "note": f"the drive answered neither ATIP (error {error}) nor the full TOC (error {toc_error})"
+                        + (": no disc, or not ready" if ERROR_NOT_READY in (error, toc_error) else "")}
+    return {"recordable": False, "note": f"the drive reads the full TOC but has no ATIP for the disc (error {error}), as on a pressed disc"}
 
 
 def walk(root, max_depth=3):
@@ -106,12 +180,21 @@ def version_strings(data):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("device", help="drive letter (D:) or device path (/dev/sr0)")
+    ap.add_argument("device", nargs="?", help="drive letter (D:) or device path (/dev/sr0)")
     ap.add_argument("--root", help="mount point, when it isn't the drive letter")
+    ap.add_argument("--atip-file", help="only decode a saved ATIP (redumper's archival/<name>.atip)")
     args = ap.parse_args()
+    if args.atip_file:
+        with open(args.atip_file, "rb") as f:
+            atip = decode_atip(f.read())
+        json.dump({"media": {"recordable": atip is not None, "atip": atip}}, sys.stdout, indent=1)
+        print()
+        return
+    if not args.device:
+        ap.error("give the drive, or --atip-file")
     root = root_path(args.device, args.root)
 
-    result = {"pvd": pvd(args.device), "rootListing": [], "ini": {}, "versionInfo": {},
+    result = {"media": media(args.device), "pvd": pvd(args.device), "rootListing": [], "ini": {}, "versionInfo": {},
               "readmes": {}, "copyrights": [], "discNumberHints": [], "fileDates": {}}
     try:
         result["rootListing"] = sorted(os.listdir(root))

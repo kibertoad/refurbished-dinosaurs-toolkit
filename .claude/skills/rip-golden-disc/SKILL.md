@@ -1,12 +1,12 @@
 ---
 name: rip-golden-disc
-description: "Rip a game disc with disc-archiver into the local golden reference archive and upload it to the golden-reference-disks R2 bucket with the cf CLI. The raw redumper rip is always uploaded; the bin/cue image only when it matches a Redump entry exactly, otherwise it is cured from historical rips and held back for manual validation. Use when asked to rip, archive, dump or make a golden reference of a game disc, or to upload an existing rip to the golden reference bucket."
+description: "Rip a game disc with disc-archiver into the local golden reference archive and upload it to the golden-reference-disks R2 bucket with the cf CLI. The raw redumper rip is always uploaded; the bin/cue image only when it matches a Redump entry exactly, otherwise it is cured from historical rips and held back for manual validation. A CD-R/RW copy is ripped only on the user's confirmation, marked as such, and never uploaded. Use when asked to rip, archive, dump or make a golden reference of a game disc, or to upload an existing rip to the golden reference bucket."
 argument-hint: "[<Title> (<Year>) [(Disc N)]]"
 ---
 
 # Rip a golden reference disc and upload it
 
-Arguments: optionally the disc's folder name, `Name (Year)`, with ` (Disc N)` for multi-disc games and region/languages when a second edition of the same game is already in the bucket (see the bucket README's Layout section). When the user gives no name, or gives only part of it, work it out from the disc (step 2). Ask only when that fails.
+Arguments: optionally the disc's folder name, `Name (Year)`, with ` (Disc N)` for multi-disc games and region/languages when a second edition of the same game is already in the bucket (see the bucket README's Layout section). When the user gives no name, or gives only part of it, work it out from the disc (step 3). Ask only when that fails.
 
 Never use wrangler here. All Cloudflare work goes through `cf`.
 
@@ -34,22 +34,30 @@ Run these and stop on the first failure:
 - `aws --version` works (needed for files over 300 MB).
 - The disc is in the drive: the drive's root lists files. If it doesn't, ask the user to insert it.
 
-## 2. Name the disc
+## 2. Check it is a pressed disc
 
-Skip what the user already gave. Otherwise gather the evidence:
+The golden reference bucket holds rips of pressed retail discs only. A CD-R or CD-RW is a copy someone burned, often from a rebuilt image, so it says nothing certain about the retail disc even when its files are intact. Run this for every disc, whether or not the user gave a name:
 
 ```sh
 python -I <this skill>/scripts/disc_identity.py <drive>      # Linux: /dev/sr0 --root <mount point>
 ```
 
-It prints JSON: the ISO 9660 volume descriptor (volume ID, publisher, application, creation date), `autorun.inf`, installer metadata (InstallShield `SETUP.INI` AppName and `DATA.TAG` Application/Company/Version, other `.ini`/`.inf`/`.id` keys), version resources of the disc's own executables (Microsoft and other redistributables are dropped), the first lines of readmes, copyright lines, file names hinting at a disc number, and file dates per year. Read further on the disc when that is not enough (a manual PDF, an `.ico` name, strings in the main exe).
+Read `media` in its JSON. Only recordable discs have an ATIP (the drive reads it from the pregroove a blank is made with); the script asks the drive for it and decodes it.
+
+- `recordable: true`: stop before ripping. Warn the user that the disc is a CD-R (or CD-RW) and not a retail pressing, with the evidence: disc type, ATIP lead-in start and last lead-out start, and anything in the volume descriptor that agrees (an image tool in `pvd.applicationUse` such as `ULTRAISO`, a creation date years after the newest file, a burning tool in `pvd.application`). Say that if they go ahead, the rip stays local, is marked as a CD-R rip, and is not uploaded. Rip only when the user confirms in this conversation.
+- `recordable: false`: the drive reads the disc's full TOC but has no ATIP for it, as with a pressed disc. Carry on.
+- `recordable: null`: not settled (Linux, where the script doesn't read ATIP, or the drive was not ready). Carry on; step 4 checks the rip.
+
+## 3. Name the disc
+
+Skip what the user already gave. Otherwise use the rest of the step 2 output. Besides `media` it holds the ISO 9660 volume descriptor (volume ID, publisher, application, creation date, application-use strings), `autorun.inf`, installer metadata (InstallShield `SETUP.INI` AppName and `DATA.TAG` Application/Company/Version, other `.ini`/`.inf`/`.id` keys), version resources of the disc's own executables (Microsoft and other redistributables are dropped), the first lines of readmes, copyright lines, file names hinting at a disc number, and file dates per year. Read further on the disc when that is not enough (a manual PDF, an `.ico` name, strings in the main exe).
 
 - **Name**: the title the publisher used, in normal word order ("The Title", not "Title, The" as Redump lists it). Installer AppName, readme heading and exe ProductName usually agree; when they differ only by a leading article, take the fuller one. Never use the volume ID itself as the title: it is an 8 to 32 character code. Search the DAT (it's a zip of one XML file; `<game name="...">`) for the title to get Redump's spelling, see which regions and disc counts exist, and note the editions already there.
 - **Year**: the original release year of this edition. Copyright lines from the game's own publisher give it; the volume creation date and the newest file date bound it from below (a disc mastered in a given year shipped that year or later). When the copyright year and the mastering year agree, that is the year. When they disagree, or there's no copyright line, look up the release date with a web search using the title and publisher, and pick the year matching the edition and mastering date on the disc.
 - **Disc number**: `(Disc N)` when the game shipped on several discs. Hints are a `DISKn.ID`-style file, a digit at the end of the volume ID, `CD1`/`Disc 2` in file names, and the disc count of the game's DAT entries. A `DISK1.ID` file alone does not make a game multi-disc; InstallShield writes one on single-disc games too. Check the DAT or a web search before adding `(Disc 1)`.
 - **Region/languages**: only when the bucket already has another edition of the game. The installer's language list (`SETUP.LID`, `LANG.DAT`), the readme language and a region letter in the version string (`v1.2E`) tell them apart.
 
-Then check the name is free. Run cf from the scratchpad, since it drops a `.cloudflare/` folder in its working directory:
+Then check the name is free (for a CD-R, only the local folder matters). Run cf from the scratchpad, since it drops a `.cloudflare/` folder in its working directory:
 
 - `cf r2 buckets objects list --bucket-name "$GOLDEN_DISCS_BUCKET" --prefix "<Name (Year)>/"` returns `[]`, and `"$GOLDEN_DISCS_ROOT/<Name (Year)>"` doesn't exist. If either does, stop and ask before touching it: it may be the same disc ripped before, or another edition that needs region/languages in its name.
 
@@ -57,7 +65,7 @@ Tell the user the name you settled on and the evidence for each part (one line e
 
 Ask the user only as a last resort: no title on the disc, candidates that conflict and can't be settled from the DAT or a web search, or a year you can't narrow to one.
 
-## 3. Rip
+## 4. Rip
 
 Run in the background (a CD takes 15 to 40 minutes) and keep the console log in the archive root, next to the disc folders:
 
@@ -79,7 +87,22 @@ Anything done by hand gets recorded under `source.handFilled` in `rip-manifest.j
 
 After the rip the folder holds `rip-manifest.json`, `PERSONAL-ARCHIVE-ONLY.txt`, `archival/`, `bincue-split/` and `files/`. Leave them all locally. The script never uploads `files/` or redumper's `.bin`/`.cue` copies inside `archival/`.
 
-## 4. Upload
+### Check the rip for a CD-R
+
+redumper saves `archival/<Name>.atip` only when the drive returns an ATIP, so its presence is the second check. When the file is there:
+
+```sh
+python -I <this skill>/scripts/disc_identity.py --atip-file "$GOLDEN_DISCS_ROOT/<Name (Year)>/archival/<Name>.atip"
+```
+
+If it decodes (`recordable: true`) but step 2 did not say the disc was recordable, stop and warn the user as in step 2. The rip is already on disk, so the question is only whether to keep it. Then, for every CD-R rip the user keeps, mark it:
+
+- In `rip-manifest.json`, `source.handFilled.recordableMedia`: `recordable: true`, the decoded `discType`, `leadInStart`, `lastLeadOutStart` and `raw`, `atipFile` (`archival/<Name>.atip`), the supporting evidence (volume descriptor fields, dates), any hub marking the user reads off the disc (`hubMarking`), when and how the user confirmed the rip, and `upload: "not uploaded: CD-R/RW rips are not golden references"`.
+- `RECORDABLE-SOURCE.txt` in the folder root: two or three sentences saying this is a rip of a CD-R/RW copy, not a retail pressing, with the same evidence.
+
+Then skip steps 5 to 7 and report (step 8). `r2_disc.py` refuses such a folder anyway (exit 5), from either the `.atip` file or the manifest entry, and has no override.
+
+## 5. Upload
 
 Run from the scratchpad (the script runs cf in a temp folder, but Python and the aws CLI should not run from inside a disc folder):
 
@@ -95,11 +118,11 @@ Add `--dry-run` first if anything about the folder looks unusual. What the scrip
 4. Skips objects whose remote etag already matches, so rerunning resumes a failed upload.
 5. Verifies every uploaded file against the bucket listing (size, etag, storage class) and lists any extra keys under the folder.
 
-Exit codes: 0 everything uploaded and verified; 4 raw rip uploaded and verified, bincue-split held back; 1 failure. On 1, rerun once; if it fails again, report the error. If a run dies between minting and deleting a token, delete it by hand: `cf accounts tokens list`, then `cf accounts tokens delete <id> -f` for any `golden-disc-upload-*` token.
+Exit codes: 0 everything uploaded and verified; 4 raw rip uploaded and verified, bincue-split held back; 5 the source is a CD-R/RW and nothing was uploaded (go back to "Check the rip for a CD-R"); 1 failure. On 1, rerun once; if it fails again, report the error. If a run dies between minting and deleting a token, delete it by hand: `cf accounts tokens list`, then `cf accounts tokens delete <id> -f` for any `golden-disc-upload-*` token.
 
 `r2_disc.py gate "<folder>"` runs only the gate. `verify "<folder>" [--with-bincue]` only the check against the bucket.
 
-## 5. When the gate fails: cure the image, then validate
+## 6. When the gate fails: cure the image, then validate
 
 Do not upload bincue-split as ripped. The raw rip is already up by now, so nothing is lost while the image is worked on. Tell the user, as the first thing in the report, that the bin/cue image is held back, with the Redump status and the nearest entries the archiver named, plus its explanation (`notListed` with every audio track's size matching usually means an unlisted pressing; `mismatched` can mean a bad dump).
 
@@ -116,7 +139,7 @@ Then show the user the evidence (which regions changed, from which source, how e
 
 If there are no historical rips, the other ways to settle it are a second dump on another drive, and comparing the disc's ring codes, barcode and edition with the nearest entries' redump.org pages. Record ring codes under `source.handFilled.ringCodes`.
 
-## 6. Bucket README
+## 7. Bucket README
 
 The bucket root `README.md` has a Discs table with one row per disc. In the scratchpad, fetch it, add the row, put it back:
 
@@ -128,6 +151,6 @@ cf r2 buckets objects upload README.md --bucket-name "$GOLDEN_DISCS_BUCKET" --fi
 
 Row columns: Folder, Edition (region, publisher/catalogue, track layout), Redump (`Matches: SHA-1 <data track sha1>, write offset, errors` or `Not listed. Nearest: ...`), Notes (protection, errors, anything done by hand, ring codes if read). For a cured image, say in Notes what was patched and from what, and point at the patch note. For a held-back image, say in Notes: "`bincue-split/` not uploaded: no exact Redump match, awaiting manual validation."
 
-## 7. Report
+## 8. Report
 
-Short: folder name and where it came from, drive used, Redump status, what went up (counts and total size), whether bincue-split was held back and why, anything recorded by hand, and the README change. Mention the console log path.
+Short: folder name and where it came from, whether the disc is pressed or a CD-R/RW (and for a CD-R, that it stayed local and why), drive used, Redump status, what went up (counts and total size), whether bincue-split was held back and why, anything recorded by hand, and the README change. Mention the console log path.
