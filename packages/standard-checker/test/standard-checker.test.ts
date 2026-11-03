@@ -88,12 +88,20 @@ test("preflight stops before the generated-file checks and writes nothing", (t) 
 });
 
 test("preflight reports a neutral name in a rule procedure", (t) => {
-  const root = broken(t, (r) =>
-    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "return n + 1", "return g_00401000"),
-  );
+  const root = broken(t, (r) => replaceIn(r, "spec/rules/RULE-SCORE-001.md", "return n + 1", "return g_00401000"));
   const { status, output } = run(root, "--preflight");
   assert.equal(status, 1, output);
   assert.match(output, /RULE-SCORE-001\.md: uses the neutral name g_00401000/);
+});
+
+test("preflight reports a definition that belongs to no format entry", (t) => {
+  const root = broken(t, (r) =>
+    writeFileSync(join(r, "spec", "formats", "fmt_other_001.ksy"), "meta:\n  id: fmt_other_001\n"),
+  );
+  const { status, output } = run(root, "--preflight");
+  assert.equal(status, 1, output);
+  assert.match(output, /^spec\/formats\/fmt_other_001\.ksy: belongs to no format entry \(FMT-OTHER-001\)$/m);
+  assert.doesNotMatch(output, /Kaitai compilation of/);
 });
 
 test("preflight checks parity rows", (t) => {
@@ -115,6 +123,8 @@ test("preflight rejects options that need the skipped checks", () => {
     ["--record-validation", "BLD-EXAMPLE-1.0"],
     ["--scheduled-generation"],
     ["--require-ksc"],
+    ["--require-base"],
+    ["--message", "COMMIT_EDITMSG"],
   ]) {
     const { status, output } = run(fixture, "--preflight", ...args);
     assert.equal(status, 2, output);
@@ -3873,6 +3883,19 @@ test("an audio track of a disc whose tracks the listing read must be in the reco
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /files\.yaml: CD:track03 is in the manifest but not in the listing record/);
   assert.doesNotMatch(result.output, /CD:track02 is in the manifest/);
+});
+
+test("a preflight pass names the steps that the checks it ran skipped", (t) => {
+  const items = LISTING_ITEMS.filter(
+    ([path]) => path === "GAME.EXE" || path === "DATA/SCORES.BIN" || path === "SETUP.EXE",
+  );
+  const head = LISTING_HEAD.replace(/archives:\n.*\n.*\n/, "archives: []\n");
+  const { status, output } = run(broken(t, withListing(head + listingItems(items), null)), "--preflight");
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^spec preflight passed: .* Not a full check: .* Skipped: comparison of BLD-EXAMPLE-1\.0\.listing\.yaml with the list of other files of BLD-EXAMPLE-1\.0 \(.*\)\.$/m,
+  );
 });
 
 test("a listing record beside a prose list of other files is compared with the manifest, and the rest is named as skipped", (t) => {

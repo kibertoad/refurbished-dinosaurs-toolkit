@@ -53,10 +53,10 @@ export interface Problems {
   report(counts: Counts): void;
   /**
    * With problems, prints them as report does and exits with 1. With none, prints
-   * "spec preflight passed: " and the counts followed by the checks the preflight skipped, and
-   * exits with 0. It never writes a generated file.
+   * "spec preflight passed: " and the counts followed by the checks the preflight skipped and any
+   * step a check it ran skipped, and exits with 0. It never writes a generated file.
    */
-  reportPreflight(entries: number, parityRows: number, deviations: number): void;
+  reportPreflight(counts: Counts): never;
 }
 
 /** Creates the collector for a run over repoDir, against which problem paths are printed. */
@@ -100,11 +100,12 @@ export function createProblems(repoDir: string): Problems {
         : `spec check passed: ${counts}`,
     );
   };
-  const reportPreflight = (entries: number, parityRows: number, deviations: number) => {
+  const reportPreflight = ({ entries, parityRows, deviations }: Counts): never => {
     printProblems(entries);
     console.log(
       `spec preflight passed: ${entries} entries, ${parityRows} parity rows, ${deviations} deviations. ` +
-        "Not a full check: skipped Kaitai, validation, reference, citation, comment-address, rebuild-path, range-end, base and generated-file checks.",
+        "Not a full check: skipped the Kaitai compilation and the validation, reference, citation, comment-address, rebuild-path, range-end, base, generated-file and line-limit checks." +
+        (skipped.length ? ` ${skippedLine()}` : ""),
     );
     process.exit(0);
   };

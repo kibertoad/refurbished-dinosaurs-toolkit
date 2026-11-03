@@ -35,8 +35,10 @@ export interface Config {
   checkOnly: boolean;
   /**
    * --preflight: run the entry, listing, rule, argument, field, cross-entry, deviation and parity
-   * checks, then stop before the Kaitai, validation, reference, citation, comment, rebuild-path,
-   * range-end, base and generated-file checks. It writes nothing and is never a full check.
+   * checks and the check that each Kaitai definition belongs to a format entry, then stop before
+   * the Kaitai compilation and the validation, reference, citation, comment-address, rebuild-path,
+   * range-end, base, generated-file and line-limit checks. It writes nothing and is never a full
+   * check.
    */
   preflight: boolean;
   /**
@@ -152,6 +154,10 @@ export function parseOptions(argv: string[]): Config {
   }
   if (preflight && options["require-ksc"] === true) {
     console.error("--preflight skips the Kaitai compilation, so it cannot be combined with --require-ksc");
+    process.exit(2);
+  }
+  if (preflight && options["require-base"] === true) {
+    console.error("--preflight skips the base comparison, so it cannot be combined with --require-base");
     process.exit(2);
   }
   const scheduledGeneration = options["scheduled-generation"] === true;
