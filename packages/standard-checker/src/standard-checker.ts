@@ -8,6 +8,12 @@
 //
 //   --root <dir>        the repository to check (default: the current directory)
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
+//   --preflight         run the entry, listing, rule, argument, field, cross-entry, deviation
+//                       and parity checks and the check that each Kaitai definition belongs to
+//                       a format entry, then stop before the Kaitai compilation and the
+//                       validation, reference, citation, comment-address, rebuild-path,
+//                       range-end, base, generated-file and line-limit checks; writes nothing,
+//                       and the result line says it is not a full check
 //   --scheduled-generation
 //                       the indexes and PARITY.md are updated on the main branch only, such as
 //                       by a scheduled job: neither write nor compare them, and fail when the
@@ -138,7 +144,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
   process.exit(0);
 }
 const config = parseOptions(argv);
-const { problem, skip, report } = createProblems(config.repoDir);
+const { problem, skip, report, reportPreflight } = createProblems(config.repoDir);
 if (config.message !== undefined) checkMessage(config.message);
 const spec = loadSpec({ config, problem });
 // The checker's modules all sit in this file's directory, which holds nothing else, so the code
@@ -151,9 +157,15 @@ checkRules(ctx, formatNames);
 checkArgumentCounts(ctx);
 checkFieldNames(ctx, formatNames);
 checkAcrossEntries(ctx, formatNames);
+// --preflight stops after the checks that read the spec, its builds and its parity rows (the parity
+// check still reads the code for placeholders). With it, compileKaitai checks that each definition
+// belongs to a format entry and compiles nothing. The checks after the stop read code, coverage or
+// the base branch, or write generated files, so a preflight leaves them out and says so.
 compileKaitai(ctx);
 const deviations = checkDeviations(ctx);
 const parity = checkParity(ctx, deviations);
+if (config.preflight)
+  reportPreflight({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });
 checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
 checkSourceCitations(ctx);

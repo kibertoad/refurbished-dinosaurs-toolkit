@@ -10,7 +10,8 @@ import type { Context } from "../context.ts";
 /**
  * Checks that each .ksy file in spec/formats/ belongs to a format entry, and compiles them all with
  * the Kaitai Struct compiler. With --no-ksy, or with no compiler found, the compilation is recorded
- * as a skipped step; with --require-ksc, a missing compiler is a problem instead.
+ * as a skipped step; with --require-ksc, a missing compiler is a problem instead. With --preflight,
+ * only the ownership is checked and nothing is compiled.
  */
 export function compileKaitai(ctx: Context) {
   const { problem, skip } = ctx;
@@ -25,7 +26,7 @@ export function compileKaitai(ctx: Context) {
       .replace(/^FMT_([A-Z0-9]+)_(\d+)$/, "FMT-$1-$2");
     if (!entries.has(id)) problem(k, `belongs to no format entry (${id})`);
   }
-  if (!ksys.length) return;
+  if (!ksys.length || ctx.config.preflight) return;
   const definitions = `${ksys.length} definition${ksys.length === 1 ? "" : "s"}`;
   if (skipKsy) {
     skip(`Kaitai compilation of ${definitions} (--no-ksy)`);
