@@ -1,5 +1,11 @@
 # @scientific-method/standard-checker
 
+## 6.1.0
+
+### Minor Changes
+
+- c898140: Add `--preflight`, which runs the entry, listing, rule, argument, field, cross-entry, deviation and parity checks and the check that each Kaitai definition belongs to a format entry, and stops before Kaitai compilation, validation, references, citations, comment addresses, rebuild paths, range ends, the base comparison, generated files and line limits. Its result line starts `spec preflight passed:` and names what it skipped.
+
 ## 6.0.1
 
 ### Patch Changes
