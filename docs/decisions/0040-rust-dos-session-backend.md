@@ -2,7 +2,7 @@
 
 Status: accepted. Amends [ADR 0026](0026-dosbox-x-session-package.md), whose package ran DOSBox-X
 alone. Tracked in issue 446. Decision 7 is amended by [ADR 0041](0041-rust-dos-save-states.md),
-which adds save states.
+which adds save states. [ADR 0050](0050-rust-dos-only-sessions.md) makes rust-dos the only backend.
 
 ## Context
 

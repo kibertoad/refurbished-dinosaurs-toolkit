@@ -1,32 +1,16 @@
-"""Owned DOSBox-X and rust-dos debugger sessions for restoration research tooling (ADR 0026, ADR 0040).
+"""Owned rust-dos debugger sessions for restoration research tooling (ADR 0040, ADR 0050).
 
 The package owns the emulator process, the machine-wide run lock, the guest drives, muted host
 audio, session records, request IDs, operation observation, guarded writes to stopped guest
-memory against a field contract the caller supplies, gated breakpoints that stop at a boundary
-only after the guest runs a wake address, and an event log checked against the
-caller's event schemas and versioned outcome contract. It never imports the DOSBox-X
-Agent client: the caller imports it from its own checkout and passes a :data:`ClientFactory`.
-:class:`RustDosSession` runs rust-dos instead, through its HTTP debug server, with the same run
-lock, drives, guarded writes and event log, and saves and loads the machine's state, with rust-dos's
-strict match by default. Windows only.
+memory against a field contract the caller supplies, save states with rust-dos's strict match,
+and an event log checked against the caller's event schemas and versioned outcome contract.
+:class:`RustDosSession` runs rust-dos through its HTTP debug server. Windows only.
 
 The supported imports are below. Everything else is internal.
 """
 
-from .checkout import PINNED_REVISION, PINNED_TAG, CheckoutIdentity, verify_checkout
-from .client import (
-    AgentClientLike,
-    ClientFactory,
-    Endpoint,
-    RequestIds,
-    SessionClient,
-    capability_value,
-    require,
-)
-from .config import READINESS_MARKER, AgentLimits, EmulatorConfig, Media
+from .config import READINESS_MARKER, Media
 from .errors import (
-    CapabilityRefused,
-    CheckoutRefused,
     CleanupFailed,
     ConfigurationRefused,
     EmulatorExited,
@@ -34,7 +18,6 @@ from .errors import (
     EmulatorRefused,
     EventSchemaViolation,
     EventsMismatch,
-    GateRefused,
     LockHeld,
     LogEntryRefused,
     LogIncomplete,
@@ -74,7 +57,6 @@ from .events import (
     hash_modules,
     read_event_log,
 )
-from .gates import PROTECTED_MODE, REAL_ADDRESSING_MODES, CodeAddress, GatedBreakpoint, GateStop, ProtectedResolver
 from .lock import (
     DEFAULT_LOCK_PATH,
     LOCK_PATH_VARIABLE,
@@ -103,39 +85,24 @@ from .rustdos import (
     SoundBlaster,
     Ultrasound,
 )
-from .rustdos_client import MemoryRead, Reply, RustDosClient
-from .dosbox_states import AGENT_SERVER_CONFIG, CHECKPOINTS_DIRECTORY, DosboxLoadedState, DosboxState, read_dosbox_state
+from .run import EventLogSettings, Target
+from .rustdos_client import MemoryRead, Reply, RequestIds, RustDosClient
 from .rustdos_states import DRIVE_COPY, STATE_FILE, STATES_DIRECTORY, LoadedState, SavedState, read_saved_state
-from .session import DosboxSession, EventLogSettings, Observation, SessionSettings, Target
 from .writes import FieldContract, VerifiedWrite, WritableField
 
 __all__ = [
-    "AGENT_SERVER_CONFIG",
     "AUTOEXEC",
-    "AgentClientLike",
-    "AgentLimits",
-    "CHECKPOINTS_DIRECTORY",
-    "CapabilityRefused",
-    "CheckoutIdentity",
-    "CheckoutRefused",
     "CleanupFailed",
-    "ClientFactory",
-    "CodeAddress",
     "ConfigurationRefused",
     "DEFAULT_LOCK_PATH",
     "DEFAULT_MAX_LOG_BYTES",
     "DRIVE_COPY",
-    "DosboxLoadedState",
-    "DosboxState",
-    "DosboxSession",
     "EMULATOR_CONFIG",
     "EMULATOR_LOG",
     "EMULATOR_OUTPUT",
-    "EmulatorConfig",
     "EmulatorExited",
     "EmulatorLaunchFailed",
     "EmulatorRefused",
-    "Endpoint",
     "EventLog",
     "EventLogSettings",
     "EventLogWriter",
@@ -144,9 +111,6 @@ __all__ = [
     "EventsMismatch",
     "FIELD_TYPES",
     "FieldContract",
-    "GateRefused",
-    "GateStop",
-    "GatedBreakpoint",
     "LOCK_PATH_VARIABLE",
     "LOG_FORMAT",
     "LockHeld",
@@ -163,20 +127,14 @@ __all__ = [
     "MemoryRead",
     "ModuleHash",
     "ModuleRefused",
-    "Observation",
     "OperationPending",
     "OutcomeContract",
     "OutcomeContractViolation",
     "OutcomeFailed",
     "OutcomeMismatch",
-    "PINNED_REVISION",
-    "PINNED_TAG",
-    "PROTECTED_MODE",
     "PlatformRefused",
     "ProcessIdentity",
-    "ProtectedResolver",
     "READINESS_MARKER",
-    "REAL_ADDRESSING_MODES",
     "RUST_DOS_API_VERSION",
     "RUST_DOS_FEATURES",
     "RUST_DOS_PINNED_TAG",
@@ -199,9 +157,7 @@ __all__ = [
     "STATE_FILE",
     "SavedState",
     "ServerRefused",
-    "SessionClient",
     "SessionError",
-    "SessionSettings",
     "SoundBlaster",
     "StateFailed",
     "StateRefused",
@@ -213,14 +169,10 @@ __all__ = [
     "WriteHashMismatch",
     "WriteOutsideContract",
     "WriteReadbackMismatch",
-    "capability_value",
     "hash_modules",
-    "read_dosbox_state",
     "read_event_log",
     "read_saved_state",
     "read_lock",
     "remove_stale_lock",
-    "require",
     "resolve_lock_path",
-    "verify_checkout",
 ]

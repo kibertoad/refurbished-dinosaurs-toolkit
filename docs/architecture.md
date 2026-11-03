@@ -129,55 +129,42 @@ Restorations do not depend on it in code: players and researchers run it before 
 
 ### dinorefurb-dosbox-session
 
-Owns emulator debugger sessions for a restoration's research tooling, on DOSBox-X
-([ADR 0026](decisions/0026-dosbox-x-session-package.md)) or on rust-dos
-([ADR 0040](decisions/0040-rust-dos-session-backend.md)).
+Owns rust-dos debugger sessions for a restoration's research tooling
+([ADR 0040](decisions/0040-rust-dos-session-backend.md)). It ran DOSBox-X sessions too until
+[ADR 0050](decisions/0050-rust-dos-only-sessions.md) removed them; the package keeps its name.
 
-- Takes a factory for the DOSBox-X Agent client from the caller, who imports the client from a
-  DOSBox-X checkout at the pinned revision. The package never imports, vendors or depends on the
-  client, which is GPL-2.0, and refuses a checkout at another revision or with local changes.
-- Launches the emulator with a generated configuration and a hidden native console, inside a job
-  that Windows ends when the owner process ends, waits for a marker the guest writes once its
-  drives are set up, and starts the target stopped at its entry.
+- Runs the pinned upstream rust-dos v1.8.1 Windows x86-64 release through its HTTP debug server,
+  which the package speaks with the standard library. It refuses a server without API version 1
+  and the features it relies on.
+- Launches the emulator inside a job that Windows ends when the owner process ends
+  ([ADR 0030](decisions/0030-owned-emulator-ends-with-its-owner.md)), waits for a marker the
+  guest writes once its drives are set up, and starts the target stopped at its entry.
 - Holds the machine-wide run lock, which records processes by ID and start time; a held lock
   refuses the session, and only the `stale-lock` command removes a lock whose processes have
   exited.
-- Gives each run an empty writable C:, mounts media read-only and mutes host audio by default.
-- Writes a session record, gives every call a request ID from its client's own namespace, refuses
-  calls the reported capabilities lack, and reports an observation that runs out of time as
-  pending.
-- Writes to stopped guest memory only for fields in a contract the caller supplies, checks the
-  hash of the bytes each write replaces and reads the write back. A refused or failed write fails
-  the run. The package has no default contract.
-- Offers gated breakpoints: a boundary armed only after the guest runs a wake address the caller
-  names, so a polling loop stops once per wake instead of on every pass
-  ([ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md)). In protected mode it
-  places addresses through a resolver the caller supplies
-  ([ADR 0037](decisions/0037-gated-breakpoints-in-protected-mode.md)). The caller's condition,
-  the resolver's correctness and the proof that only wake code changes the condition's inputs
-  stay with the caller.
+- Gives each run an empty writable C:, mounts media read-only and mutes host audio by default
+  (`--audio-output null`).
+- Writes a session record, gives every request an ID from its client's own namespace, tracks
+  operations through the server's journal, finds a continuation whose reply was lost there, and
+  reports an observation that runs out of time as pending.
+- Writes to stopped guest memory only for fields in a contract the caller supplies. The server
+  refuses the write if the bytes differ or the machine changed since the field was read
+  (`If-State-Seq`), and the session reads the write back. A refused or failed write fails the
+  run. The package has no default contract.
+- Saves and loads the whole machine, with rust-dos's strict match by default, hashes each state's
+  files and checks that a load stops where the state was saved. A checkpoint keeps a copy of C:,
+  and a later run starts from it on a fresh copy
+  ([ADR 0041](decisions/0041-rust-dos-save-states.md)).
+- Places the emulated Sound Blaster and Ultrasound through a configuration file it writes and
+  validates, and nothing else of rust-dos's configuration file reaches the run
+  ([ADR 0046](decisions/0046-rust-dos-sound-cards.md)).
 - Keeps an event log when asked: JSON lines synced as they are written, each event checked
   against the caller's schemas, ending in an outcome that fits the caller's versioned contract
   and records the count and an ordered hash of the events. The header records the schemas, the
   contract and hashes of modules the caller names, which must be imported before the session
   starts. A log is read against the contract it recorded and the outcome the caller expected,
   and reading names the check that failed.
-- Runs rust-dos as the preferred backend (`RustDosSession`), targeting the pinned upstream v1.7.5
-  Windows x86-64 release, through its HTTP debug server, which the
-  package speaks with the standard library. It takes the same run lock, C: and event log, refuses
-  a server without API version 1 and the features it relies on, starts the target stopped at its
-  entry, tracks operations through the server's journal, and makes guarded writes that the server
-  refuses if the machine changed since the field was read (`If-State-Seq`). It saves and loads the
-  whole machine, with rust-dos's strict match by default, hashes each state's files and checks
-  that a load stops where the state was saved. A checkpoint keeps a copy of C:, and a later run
-  starts from it on a fresh copy
-  ([ADR 0041](decisions/0041-rust-dos-save-states.md)). It places the emulated Sound Blaster and
-  Ultrasound through a configuration file it writes and validates, and nothing else of rust-dos's
-  configuration file reaches the run
-  ([ADR 0046](decisions/0046-rust-dos-sound-cards.md)). Gated breakpoints stay with DOSBox-X.
-  A DOSBox-X build with Agent protocol 1.1 also saves and restores checkpoints, C: included, and
-  starts later runs from them (same ADR). Known incompatibilities are investigated and fixed through upstream PRs;
-  DOSBox-X is a temporary fallback until the fix is released and verified.
+- Known rust-dos incompatibilities are investigated and fixed through upstream PRs.
 - Windows only.
 
 What a run means stays in the restoration. A restored game never depends on this package.

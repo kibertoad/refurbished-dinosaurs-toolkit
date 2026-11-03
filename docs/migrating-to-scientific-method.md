@@ -592,6 +592,28 @@ whose dump `check` refuses for this reason is dumped again.
 Discs without empty form 2 sectors or MODE2 sectors with differing subheader copies keep every
 value.
 
+## Session package upgrades
+
+### dinorefurb-dosbox-session 1.0.0: rust-dos only
+
+The package runs rust-dos sessions only ([ADR 0050](decisions/0050-rust-dos-only-sessions.md)). DOSBox-X sessions, their save states and gated breakpoints are gone, without aliases. Package 0.11.0 is the last release with them; a restoration that can't port a probe yet pins it.
+
+| Removed | Use instead |
+|---|---|
+| `DosboxSession`, `SessionSettings` | `RustDosSession`, `RustDosSettings` |
+| `EmulatorConfig` (`media`, `keep_host_sound`), `AgentLimits` | `RustDosConfig` (`media`, `keep_host_sound`, `cycles`, `deterministic`, the sound cards). There are no free-form configuration sections. |
+| `Observation` | `RustDosObservation` |
+| `AgentClientLike`, `ClientFactory`, `Endpoint`, `SessionClient`, `capability_value`, `require` | `session.client`, a `RustDosClient`. A server without a feature the session needs is refused at start (`EmulatorRefused`), so there is no per-call capability check. |
+| `verify_checkout`, `CheckoutIdentity`, `PINNED_REVISION`, `PINNED_TAG` | `RUST_DOS_PINNED_TAG` and `RUST_DOS_PINNED_SHA256`, passed as `RustDosSettings.emulator_sha256` |
+| `DosboxState`, `DosboxLoadedState`, `read_dosbox_state`, `AGENT_SERVER_CONFIG`, `CHECKPOINTS_DIRECTORY`, `SessionSettings.checkpoints` | `SavedState`, `LoadedState`, `read_saved_state`, `session.save_state(name, check_files=True)`, `RustDosSettings.start_state` |
+| `GatedBreakpoint`, `GateStop`, `CodeAddress`, `ProtectedResolver`, `PROTECTED_MODE`, `REAL_ADDRESSING_MODES` | nothing in the package. rust-dos's breakpoints with `once`, `break_on` stops and `continue_(until_ms=...)` in a deterministic run cover some polling waits. |
+| `CheckoutRefused`, `CapabilityRefused`, `GateRefused` | nothing; nothing raises them |
+| `WritableField` addresses built with the Agent's `MemoryAddress` | rust-dos address strings such as `"1234:0200"` or `"phys:12540"` |
+
+`Target`, `EventLogSettings`, `FieldContract`, `WritableField`, `Media`, `RequestIds`, the event log and the run lock are unchanged. An event log written by a DOSBox-X session still reads with `read_event_log`.
+
+The session now pins rust-dos [v1.8.1](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.8.1). Download `rust-dos-v1.8.1-windows-x86_64.zip`, keep its DLLs beside `rust-dos.exe`, and pass `RUST_DOS_PINNED_SHA256`. The session mutes the host with `--audio-output null` in place of SDL's dummy audio driver, and passes `--audio-output sdl` for `keep_host_sound`; a rust-dos before v1.8.1 doesn't take the option and the session fails with `EmulatorExited`. `--audio-output` joins the options `emulator_arguments` may not carry. A checkpoint saved under v1.7.5 records that executable's SHA-256, so a v1.8.1 run refuses to start from it (`EmulatorRefused`); save it again under v1.8.1.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first. Each entry is

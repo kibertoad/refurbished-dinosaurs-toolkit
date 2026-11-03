@@ -27,7 +27,7 @@ test("a package is touched by a file under its path prefix or by an exact file p
   assert.ok(!touched(dotnet, ["tools/global.json"]));
   assert.ok(touched(archiver, ["packages/disc-archiver/src/dinorefurb_disc_archiver/cli.py"]));
   assert.ok(!touched(engine, ["packages/disc-archiver/README.md"]));
-  assert.ok(touched(dosboxSession, ["packages/dosbox-session/src/dinorefurb_dosbox_session/session.py"]));
+  assert.ok(touched(dosboxSession, ["packages/dosbox-session/src/dinorefurb_dosbox_session/rustdos.py"]));
   assert.ok(!touched(archiver, ["packages/dosbox-session/README.md"]));
 });
 

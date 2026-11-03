@@ -57,7 +57,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Documentation checker rule | `packages/standard-checker/test/standard-checker.test.ts`, with a passing and a failing fixture |
 | .NET API | `packages/dotnet/RefurbishedDinosaurs.Core.Tests/` |
 | Disc archiver backend, format, profile field or command | `packages/disc-archiver/tests/`, against synthetic discs from `tests/synthetic.py` and stand-in programs, with a refused or unavailable case |
-| DOSBox-X or rust-dos session lifecycle, lock, drives, records, observation, guarded writes or event log | `packages/dosbox-session/tests/`, against the stand-in emulator and stand-in client, or the stand-in rust-dos server, with a refused case; they run on Windows. A change to process, transport or drive handling also runs the README's native procedure before release |
+| rust-dos session lifecycle, lock, drives, records, observation, guarded writes, save states or event log | `packages/dosbox-session/tests/`, against the stand-in rust-dos server, with a refused case; they run on Windows. A change to process, transport or drive handling also runs the README's native procedure before release |
 | Ghidra script | it compiles against Ghidra 12.1, which CI checks (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
 | Which CI jobs a change runs (`tools/ci/changes.ts`) | `tools/ci/changes.test.ts` |
@@ -166,8 +166,10 @@ Prefer rust-dos for emulator research sessions, using the release and executable
 issues and PRs for duplicates, and open a fix PR against `dividebysandwich/rust-dos` with a
 synthetic regression test. `C:\sources\rust-dos` is available for creating an isolated worktree.
 Keep original game content and extracted evidence out of the worktree and PR. Until the fix is
-released, use DOSBox-X as a temporary fallback for the affected work and record the reason and
-upstream PR in the restoration's research notes. Verify the released fix before switching back.
+released, the affected work waits for it or pins `dinorefurb-dosbox-session` 0.11.0, the last
+release with DOSBox-X sessions ([ADR 0050](docs/decisions/0050-rust-dos-only-sessions.md)), and
+the restoration's research notes record the reason and the upstream PR. Verify the released fix
+before switching back.
 
 Restorations report what the tooling would not let them do: reporter requests, gap lists,
 upstream-dispatch bundles, failing configs. Handle them with the `downstream-tooling-request` skill

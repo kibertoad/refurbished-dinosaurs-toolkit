@@ -1,7 +1,7 @@
 """An owned rust-dos debugger session: process, run lock, drives, records and operations (ADR 0040).
 
 rust-dos is a DOS emulator with a debug server built into its release binaries. The session runs
-it with its own C: and the machine-wide run lock that DOSBox-X sessions take, starts the target
+it with its own C: and the machine-wide run lock, starts the target
 stopped at its entry, and tracks the operations it starts through the server's journal.
 """
 
@@ -22,8 +22,6 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 from . import processes
-from .checkout import file_sha256
-from .client import RequestIds
 from .config import READINESS_MARKER, Media
 from .errors import (
     CleanupFailed,
@@ -45,8 +43,9 @@ from .errors import (
 )
 from .events import EventLogWriter
 from .lock import RunLock, resolve_lock_path
-from .run import OwnedRun, RunState, package_version
-from .rustdos_client import MemoryRead, Reply, RustDosClient
+from .hashing import file_sha256, sha256
+from .run import EventLogSettings, OwnedRun, RunState, Target, package_version
+from .rustdos_client import MemoryRead, Reply, RequestIds, RustDosClient
 from .rustdos_states import (
     DRIVE_COPY,
     STATE_FILE,
@@ -61,8 +60,7 @@ from .rustdos_states import (
     strings,
     valid_name,
 )
-from .session import EventLogSettings, Target
-from .writes import FieldContract, VerifiedWrite, WritableField, sha256
+from .writes import FieldContract, VerifiedWrite, WritableField
 from .writes import _normalize_sha256 as normalize_sha256
 
 #: The ``format`` field of a rust-dos session's ``session.json``.
@@ -73,11 +71,11 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 RUST_DOS_API_VERSION = 1
 
 #: The supported upstream release for Windows x86-64 sessions.
-RUST_DOS_PINNED_TAG = "v1.7.5"
+RUST_DOS_PINNED_TAG = "v1.8.1"
 
-#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.5-windows-x86_64.zip``.
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.8.1-windows-x86_64.zip``.
 #: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
-RUST_DOS_PINNED_SHA256 = "1635427ad8eaddd08e11ca31c9fc81cabff5c264bfaa708a1eca477d54184830"
+RUST_DOS_PINNED_SHA256 = "e880ecf0d76dbb2f77e4d1d7568d90cb53f3d1cf798679cd24f025955bf85da0"
 
 #: The debug server features the session relies on. A server that lacks one is refused. ``build``
 #: puts the commit the emulator was built from in ``/api/version``, which the session record keeps.
@@ -121,7 +119,7 @@ _CONFIG_WARNING = re.compile(
     rf"^\[CONFIG\] Warning: (?:.*{re.escape(EMULATOR_CONFIG)}: |awe32rom: ).*$", re.MULTILINE
 )
 
-# The values rust-dos v1.7.2 to v1.7.5 take in [sound]; it warns about any other and keeps its default.
+# The values rust-dos v1.7.2 to v1.8.1 take in [sound]; it warns about any other and keeps its default.
 _SB_MODELS = ("sb16", "sb16vibra", "awe32", "sbpro2", "sb2")
 _SB16_MODELS = ("sb16", "sb16vibra", "awe32")
 _SB_BASES = tuple(range(0x210, 0x281, 0x10))
@@ -144,6 +142,7 @@ _OWNED_OPTIONS = (
     "--deterministic",
     "--start-time",
     "--cycles",
+    "--audio-output",
     "--game",
     "--import",
     "--relay",
@@ -220,8 +219,9 @@ class RustDosConfig:
     - ``deterministic``: runs on emulated time alone (``--deterministic``): a fixed speed, a clock
       that starts at ``start_time`` and input delivered at emulated times. ``cycles`` must then be
       a number. ``start_time`` (``YYYY-MM-DD HH:MM:SS``) is only taken with it.
-    - ``keep_host_sound``: leaves host audio on. By default SDL's dummy audio driver takes the
-      output, which mutes the host and keeps the emulated sound devices.
+    - ``keep_host_sound``: plays the sound on the host's device (``--audio-output sdl``). By
+      default it goes to rust-dos's null output (``--audio-output null``), which mutes the host and
+      keeps the emulated sound devices.
     - ``show_window``: shows the emulator's window. By default SDL's dummy video driver runs it
       without one.
     - ``sound_blaster``: the emulated Sound Blaster, or ``None`` for none (``sbtype=none``).
@@ -629,6 +629,9 @@ class RustDosSession(OwnedRun):
         ]
         if config.cycles is not None:
             arguments += ["--cycles", config.cycles]
+        # The null output plays nothing and keeps time exactly. Without a window rust-dos would
+        # choose it anyway, so keeping the host's sound has to ask for SDL's device by name.
+        arguments += ["--audio-output", "sdl" if config.keep_host_sound else "null"]
         if config.deterministic:
             arguments.append("--deterministic")
             if config.start_time is not None:
@@ -637,8 +640,6 @@ class RustDosSession(OwnedRun):
         environment = dict(os.environ)
         if not config.show_window:
             environment["SDL_VIDEODRIVER"] = "dummy"
-        if not config.keep_host_sound:
-            environment["SDL_AUDIODRIVER"] = "dummy"
         self._write_record()
         try:
             self._process = processes.launch_owned(
@@ -989,7 +990,7 @@ class RustDosSession(OwnedRun):
         field still holds the bytes read (``expect``). The bytes the server reports replacing and
         leaving, and the bytes read back in the same state, must match.
 
-        Any refusal or failure fails the run, as for a DOSBox-X session.
+        Any refusal or failure fails the run and is recorded in the session record.
 
         :raises WriteOutsideContract: no contract, a field the contract lacks, ``data`` that is not
             bytes-like, or a length that differs from the field's.

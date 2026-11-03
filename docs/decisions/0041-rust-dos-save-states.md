@@ -3,7 +3,7 @@
 Status: accepted. Amends decision 7 of [ADR 0040](0040-rust-dos-session-backend.md), which left save
 states out of `RustDosSession`, and, for runs started from a checkpoint, the empty C: of
 [ADR 0026](0026-dosbox-x-session-package.md). For DOSBox-X it follows ADR 0028 (PR 421), whose
-conditions the Agent's protocol 1.1 checkpoints meet.
+conditions the Agent's protocol 1.1 checkpoints meet. The DOSBox-X half is superseded by [ADR 0050](0050-rust-dos-only-sessions.md), which removed the DOSBox-X backend; the rust-dos half stands.
 
 ## Context
 
