@@ -51,6 +51,12 @@ export interface Problems {
    * or "spec check passed with skipped steps: " and counts followed by the skipped steps.
    */
   report(counts: Counts): void;
+  /**
+   * With problems, prints them as report does and exits with 1. With none, prints
+   * "spec preflight passed: " and the counts followed by the checks the preflight skipped, and
+   * exits with 0. It never writes a generated file.
+   */
+  reportPreflight(entries: number, parityRows: number, deviations: number): void;
 }
 
 /** Creates the collector for a run over repoDir, against which problem paths are printed. */
@@ -70,25 +76,37 @@ export function createProblems(repoDir: string): Problems {
     skipped.push(step);
   };
   const skippedLine = () => `Skipped: ${skipped.join("; ")}.`;
-  const report = ({ entries, parityRows, deviations }: Counts) => {
-    const counts = `${entries} entries, ${parityRows} parity rows, ${deviations} deviations.`;
+  // Prints every distinct problem, the summary and the skipped steps, and exits 1. Returns
+  // without printing when there are none.
+  const printProblems = (entries: number) => {
     // The same problem can be found twice, such as a term that cites one finding in two places.
     const unique = [...new Set(problems)];
-    if (unique.length) {
-      for (const p of unique) console.error(p);
-      console.error(`\n${unique.length} problem(s) in ${entries} spec entries.`);
-      if (citedRule)
-        console.error(
-          "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at https://dinorefurb.com/documentation-standard/#status-14 and at #status-14 in a vendored copy.",
-        );
-      if (skipped.length) console.error(skippedLine());
-      process.exit(1);
-    }
+    if (!unique.length) return;
+    for (const p of unique) console.error(p);
+    console.error(`\n${unique.length} problem(s) in ${entries} spec entries.`);
+    if (citedRule)
+      console.error(
+        "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at https://dinorefurb.com/documentation-standard/#status-14 and at #status-14 in a vendored copy.",
+      );
+    if (skipped.length) console.error(skippedLine());
+    process.exit(1);
+  };
+  const report = ({ entries, parityRows, deviations }: Counts) => {
+    printProblems(entries);
+    const counts = `${entries} entries, ${parityRows} parity rows, ${deviations} deviations.`;
     console.log(
       skipped.length
         ? `spec check passed with skipped steps: ${counts} ${skippedLine()}`
         : `spec check passed: ${counts}`,
     );
   };
-  return { problem, skip, report };
+  const reportPreflight = (entries: number, parityRows: number, deviations: number) => {
+    printProblems(entries);
+    console.log(
+      `spec preflight passed: ${entries} entries, ${parityRows} parity rows, ${deviations} deviations. ` +
+        "Not a full check: skipped Kaitai, validation, reference, citation, comment-address, rebuild-path, range-end, base and generated-file checks.",
+    );
+    process.exit(0);
+  };
+  return { problem, skip, report, reportPreflight };
 }

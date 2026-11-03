@@ -75,6 +75,53 @@ test("the fixture passes with fresh indexes", () => {
   );
 });
 
+test("preflight stops before the generated-file checks and writes nothing", (t) => {
+  const index = join("spec", "index", "by-kind.md");
+  const root = broken(t, (r) => rmSync(join(r, index)));
+  const { status, output } = run(root, "--preflight");
+  assert.equal(status, 0, output);
+  assert.match(output, /spec preflight passed: 4 entries, 2 parity rows, 0 deviations\. Not a full check:/);
+  assert.doesNotMatch(output, /spec check passed/);
+  assert.equal(existsSync(join(root, index)), false);
+  const full = run(root, "--check");
+  assert.equal(full.status, 1, full.output);
+});
+
+test("preflight reports a neutral name in a rule procedure", (t) => {
+  const root = broken(t, (r) =>
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "return n + 1", "return g_00401000"),
+  );
+  const { status, output } = run(root, "--preflight");
+  assert.equal(status, 1, output);
+  assert.match(output, /RULE-SCORE-001\.md: uses the neutral name g_00401000/);
+});
+
+test("preflight checks parity rows", (t) => {
+  const root = broken(t, (r) =>
+    replaceIn(
+      r,
+      "parity/SCORE.md",
+      "| `RULE-SCORE-001` | A kill adds one point to the score | sourced |",
+      "| `RULE-SCORE-001` | A kill adds one point to the score | unknown |",
+    ),
+  );
+  const { status, output } = run(root, "--preflight");
+  assert.equal(status, 1, output);
+  assert.match(output, /RULE-SCORE-001: Spec status must be sourced/);
+});
+
+test("preflight rejects options that need the skipped checks", () => {
+  for (const args of [
+    ["--record-validation", "BLD-EXAMPLE-1.0"],
+    ["--scheduled-generation"],
+    ["--require-ksc"],
+  ]) {
+    const { status, output } = run(fixture, "--preflight", ...args);
+    assert.equal(status, 2, output);
+    assert.match(output, /cannot be combined/);
+  }
+});
+
 test("a stale index fails --check", (t) => {
   const root = broken(t, (r) => writeFileSync(join(r, "spec", "index", "by-kind.md"), "stale\n"));
   const { status, output } = run(root, "--check");

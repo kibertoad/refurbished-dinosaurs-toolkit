@@ -6,6 +6,7 @@ import { ID_RE } from "./standard.ts";
 interface Options {
   glossary: string[];
   check?: boolean;
+  preflight?: boolean;
   "no-ksy"?: boolean;
   "require-ksc"?: boolean;
   "require-base"?: boolean;
@@ -32,6 +33,12 @@ export interface Config {
   specDir: string;
   /** --check: report stale generated files instead of rewriting them. */
   checkOnly: boolean;
+  /**
+   * --preflight: run the entry, listing, rule, argument, field, cross-entry, deviation and parity
+   * checks, then stop before the Kaitai, validation, reference, citation, comment, rebuild-path,
+   * range-end, base and generated-file checks. It writes nothing and is never a full check.
+   */
+  preflight: boolean;
   /**
    * --scheduled-generation: the generated files are updated on the main branch only, so the run
    * neither writes nor compares them, and fails when the change since the base edits them.
@@ -87,7 +94,7 @@ export const dirList = (value: string | undefined, fallback: string[]) =>
         .map((x) => x.trim())
         .filter(Boolean);
 
-const FLAGS = ["--check", "--no-ksy", "--require-ksc", "--require-base", "--scheduled-generation"];
+const FLAGS = ["--check", "--preflight", "--no-ksy", "--require-ksc", "--require-base", "--scheduled-generation"];
 const VALUED = [
   "--root",
   "--base",
@@ -130,6 +137,23 @@ export function parseOptions(argv: string[]): Config {
     console.error("--record-validation writes a run file to validation/, so it cannot be combined with --check");
     process.exit(2);
   }
+  const preflight = options.preflight === true;
+  if (preflight && options["record-validation"] !== undefined) {
+    console.error("--preflight skips the validation check, so it cannot be combined with --record-validation");
+    process.exit(2);
+  }
+  if (preflight && options.message !== undefined) {
+    console.error("--message checks only a commit message, so it cannot be combined with --preflight");
+    process.exit(2);
+  }
+  if (preflight && options["scheduled-generation"] === true) {
+    console.error("--preflight writes no generated files, so it cannot be combined with --scheduled-generation");
+    process.exit(2);
+  }
+  if (preflight && options["require-ksc"] === true) {
+    console.error("--preflight skips the Kaitai compilation, so it cannot be combined with --require-ksc");
+    process.exit(2);
+  }
   const scheduledGeneration = options["scheduled-generation"] === true;
   const skipKsy = options["no-ksy"] === true;
   const requireKsc = options["require-ksc"] === true;
@@ -166,6 +190,7 @@ export function parseOptions(argv: string[]): Config {
     repoDir,
     specDir,
     checkOnly,
+    preflight,
     scheduledGeneration,
     skipKsy,
     requireKsc,
