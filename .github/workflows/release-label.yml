@@ -9,11 +9,9 @@ on:
 
 permissions: {}
 
-# Opening a pull request with a label fires `opened` and `labeled` together. Only the newest run per
-# pull request is kept.
-concurrency:
-  group: release-label-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# Opening a pull request with a label fires `opened` and `labeled` together. Both runs are kept:
+# each reads the labels the pull request has when it runs, so they agree, and cancelling one left a
+# cancelled check on the pull request that GitHub shows as failed.
 
 jobs:
   check:
