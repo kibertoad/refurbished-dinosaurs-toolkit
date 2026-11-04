@@ -1,10 +1,11 @@
-"""What every owned session shares, whichever emulator it runs: the run's failure, its event log
+"""What an owned session keeps besides the emulator: its target, the run's failure, its event log
 and its run directory."""
 
 from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from importlib import metadata
 from typing import Any
@@ -12,7 +13,31 @@ from typing import Any
 from . import processes
 from .errors import EmulatorExited, LogEntryRefused, RunDirectoryRefused, RunEnded, RunFailed, SessionError
 from .events import EventLogWriter, EventSchema, OutcomeContract
-from .writes import FieldContract, VerifiedWrite, WritableField, payload, resolve, sha256, write_entry
+from .hashing import sha256
+from .writes import FieldContract, VerifiedWrite, WritableField, payload, resolve, write_entry
+
+
+@dataclass(frozen=True)
+class Target:
+    """The DOS program the session starts in the guest, stopped at its entry."""
+
+    command: str
+    arguments: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EventLogSettings:
+    """What a session's event log checks, all of it from the caller.
+
+    - ``contract``: the versioned outcome contract the log's final outcome must fit.
+    - ``schemas``: one :class:`~dinorefurb_dosbox_session.events.EventSchema` per event kind.
+    - ``modules``: names of modules to hash into the log header, such as the restoration's probe
+      and adapter modules. Each must be imported before the session starts.
+    """
+
+    contract: OutcomeContract
+    schemas: tuple[EventSchema, ...]
+    modules: tuple[str, ...] = ()
 
 
 @functools.cache

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from .checkout import file_sha256
+from .hashing import file_sha256
 from .errors import (
     EventSchemaViolation,
     EventsMismatch,
@@ -36,7 +36,7 @@ from .errors import (
     OutcomeFailed,
     OutcomeMismatch,
 )
-from .writes import sha256 as _sha256
+from .hashing import sha256 as _sha256
 
 #: The ``format`` field of an event log's header.
 LOG_FORMAT = "dinorefurb-dosbox-session.event-log/1"

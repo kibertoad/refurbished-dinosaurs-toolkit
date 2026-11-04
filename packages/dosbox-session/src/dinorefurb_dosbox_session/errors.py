@@ -13,10 +13,6 @@ class PlatformRefused(SessionError):
     """The session runs on Windows only, and this platform is another one."""
 
 
-class CheckoutRefused(SessionError):
-    """The DOSBox-X checkout is not at the pinned revision, or has local changes."""
-
-
 class RunDirectoryRefused(SessionError):
     """The run directory already holds files, such as a C: drive from an earlier run."""
 
@@ -46,40 +42,12 @@ class EmulatorExited(SessionError):
 
 
 class ReadinessNotObserved(SessionError):
-    """The guest did not write its readiness marker, or a rust-dos target did not reach its entry, before
+    """The guest did not write its readiness marker, or the target did not reach its entry, before
     the readiness wait ran out."""
-
-
-class CapabilityRefused(SessionError):
-    """An operation needs a capability the server did not report, so it was not sent.
-
-    :attr:`capability` is the dotted capability path, and :attr:`reported` the value the server
-    reported for it (``None`` when the path is absent).
-    """
-
-    def __init__(self, capability: str, reported: Any) -> None:
-        super().__init__(
-            f"The server's capabilities do not report {capability} as true (reported: {reported!r}); "
-            "the request was not sent."
-        )
-        self.capability = capability
-        self.reported = reported
 
 
 class OperationPending(SessionError):
     """A continuation was requested while an earlier operation was still pending."""
-
-
-class GateRefused(SessionError):
-    """A gated breakpoint refused its addresses or the guest's state, or can no longer vouch for
-    its own breakpoints.
-
-    It is raised for an address outside real-mode range, a boundary that shares an address with a
-    wake, a guest that is not in real or virtual-8086 mode, a breakpoint the gate did not create at
-    the boundary or a wake address, and a gate whose breakpoint request failed so that it cannot
-    tell which of its breakpoints the server holds. When it is raised before a continuation, no
-    continuation was sent.
-    """
 
 
 class WriteFailed(SessionError):

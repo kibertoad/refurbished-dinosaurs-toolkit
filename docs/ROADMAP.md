@@ -159,7 +159,7 @@ Exit condition: a table with no declared count gets a derived count only when th
 the bound on every path into the dispatch, the report marks it as derived, and every case it cannot
 prove stays unresolved with its reason. Issue 460 then closes.
 
-### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406; slices shipped)
+### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406; slices shipped, DOSBox-X removed by ADR 0050)
 
 `dinorefurb-dosbox-session` is built as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
 sets out. Each slice is one PR with synthetic tests against a stand-in emulator and a stand-in
@@ -202,10 +202,15 @@ writes and event log, and a deterministic mode. It targets upstream v1.7.5, with
 x86-64 release executable pinned by SHA-256 in the package. It saves and loads the machine's
 state, strict-match by default, and starts later runs from a checkpoint with a fresh copy of C:
 ([ADR 0041](decisions/0041-rust-dos-save-states.md)), which needs rust-dos's `load_folders`
-from v1.7.2. DOSBox-X sessions save and restore
-checkpoints through Agent protocol 1.1, which no released DOSBox-X has yet. Prefer it for new sessions;
-investigate incompatibilities and open upstream fix PRs, using DOSBox-X as a temporary fallback
-until a verified fix is released.
+from v1.7.2.
+
+[ADR 0050](decisions/0050-rust-dos-only-sessions.md) then made rust-dos the only backend, pinned at
+v1.8.1, and removed the DOSBox-X sessions, their save states and gated breakpoints. Package 0.11.0
+is the last release with them. Incompatibilities are investigated and fixed through upstream
+rust-dos PRs. [rust-dos#515](https://github.com/dividebysandwich/rust-dos/issues/515) to
+[rust-dos#522](https://github.com/dividebysandwich/rust-dos/issues/522) propose moving the run
+lock, the owner-bound process, the event log's ordering and hashing, the session record, the
+fail-closed run, request replay, checkpoint starts and configuration checks into rust-dos.
 
 ### Writing rules
 

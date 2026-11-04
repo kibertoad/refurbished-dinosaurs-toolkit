@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .checkout import file_sha256
+from .hashing import file_sha256
 from .errors import StateRefused
 
 #: The file a save writes in its state's folder. rust-dos may write further files beside it, such

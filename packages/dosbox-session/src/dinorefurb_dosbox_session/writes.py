@@ -6,21 +6,19 @@ restoration supports, where they are and how long they are stay in the restorati
 
 from __future__ import annotations
 
-import hashlib
 import string
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .client import DEBUGGER, SessionClient
-from .errors import WriteFailed, WriteHashMismatch, WriteOutsideContract, WriteReadbackMismatch
+from .errors import WriteFailed, WriteOutsideContract
 
 
 @dataclass(frozen=True)
 class WritableField:
     """One field of guest memory the caller supports writing.
 
-    ``address`` is built with the client's ``MemoryAddress``, as for ``read_memory``. A write to
-    the field replaces all ``length`` bytes at that address.
+    ``address`` is a rust-dos address string, such as ``"1234:0200"`` or ``"phys:12540"``. A write
+    to the field replaces all ``length`` bytes at that address.
     """
 
     name: str
@@ -75,11 +73,6 @@ class VerifiedWrite:
     def to_json(self) -> dict[str, Any]:
         """The write as the session record lists it."""
         return write_entry(self.contract, self.field.name, self.field, self.replaced_sha256, self.written_sha256, "verified")
-
-
-def sha256(data: bytes) -> str:
-    """The SHA-256 of ``data`` as lowercase hex."""
-    return hashlib.sha256(data).hexdigest()
 
 
 def write_entry(
@@ -145,71 +138,3 @@ def resolve(contract: FieldContract | None, field_name: str, data: bytes) -> Wri
             f"Field {field_name} of contract {contract.name} is {field.length} bytes long; the write has {len(data)}."
         )
     return field
-
-
-def _read(client: SessionClient, session_id: str, field: WritableField) -> bytes:
-    data = bytes(client.read_memory(session_id, field.address, field.length).data)
-    if len(data) != field.length:
-        raise WriteFailed(f"Reading field {field.name} returned {len(data)} bytes, not {field.length}.")
-    return data
-
-
-def guarded_write(
-    client: SessionClient,
-    session_id: str,
-    contract: FieldContract,
-    field: WritableField,
-    data: bytes,
-    expected_sha256: str,
-) -> VerifiedWrite:
-    """Writes ``data`` to a contract field of the stopped guest and reads it back.
-
-    Reads the field first and refuses the write unless those bytes hash to ``expected_sha256``.
-    The write request carries the same hash, so the server checks it again. Then it compares the
-    hashes the server reports and the bytes read back with what was written.
-
-    :raises WriteFailed: the guest is not stopped, the expected hash is malformed, or the server
-        wrote but reports replacing bytes with another hash than ``expected_sha256``.
-    :raises WriteHashMismatch: the bytes in the field do not hash to ``expected_sha256``; nothing
-        was written.
-    :raises WriteReadbackMismatch: the server's reported hashes or the readback differ from the
-        bytes written.
-    """
-    expected = _normalize_sha256(expected_sha256)
-    written = sha256(data)
-    client._require(DEBUGGER)
-    state = client.status(session_id).state
-    if state != "stopped":
-        raise WriteFailed(f"The guest is {state}; writes are made only while it is stopped.")
-    found = sha256(_read(client, session_id, field))
-    if found != expected:
-        raise WriteHashMismatch(
-            f"Field {field.name} holds bytes with SHA-256 {found}, not the expected {expected}; nothing was written.",
-            expected,
-            found,
-        )
-    result = client.raw.write_memory(
-        session_id, field.address, data, expected_sha256=expected, request_id=client.ids.next()
-    )
-    if result.before_sha256 != expected:
-        # The server accepted the write, so the field may already hold ``data``. This is not a
-        # WriteHashMismatch, which promises that nothing was written.
-        raise WriteFailed(
-            f"The server wrote field {field.name} but reports that the bytes it replaced have SHA-256 "
-            f"{result.before_sha256}, not the expected {expected}; the field may now hold the new bytes."
-        )
-    if result.byte_count != len(data) or result.after_sha256 != written:
-        raise WriteReadbackMismatch(
-            f"The server reports {result.byte_count} bytes in field {field.name} with SHA-256 "
-            f"{result.after_sha256} after the write; {len(data)} bytes with SHA-256 {written} were written.",
-            written,
-            result.after_sha256,
-        )
-    readback = sha256(_read(client, session_id, field))
-    if readback != written:
-        raise WriteReadbackMismatch(
-            f"Field {field.name} reads back with SHA-256 {readback}; the bytes written have SHA-256 {written}.",
-            written,
-            readback,
-        )
-    return VerifiedWrite(contract.name, field, expected, written)

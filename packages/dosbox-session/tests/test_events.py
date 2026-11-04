@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -14,7 +13,6 @@ from typing import Any
 from unittest import mock
 
 from dinorefurb_dosbox_session import (
-    DosboxSession,
     EmulatorExited,
     EventLogSettings,
     EventLogWriter,
@@ -36,6 +34,7 @@ from dinorefurb_dosbox_session import (
     OutcomeMismatch,
     RunEnded,
     RunFailed,
+    RustDosSession,
     SessionError,
     WriteOutsideContract,
     read_event_log,
@@ -43,8 +42,7 @@ from dinorefurb_dosbox_session import (
 from dinorefurb_dosbox_session import processes
 from dinorefurb_dosbox_session.lock import RunLock
 
-from standin_client import StandinServer
-from support import SessionCase, windows_only
+from support import RustDosCase, windows_only
 
 # A synthetic run: the probe records frames it stopped at and keys it fed, and ends with a score.
 SCHEMAS = (
@@ -388,23 +386,18 @@ class Reading(LogCase):
 
 
 @windows_only
-class SessionLogs(SessionCase):
-    def log_settings(self, server: StandinServer, modules: tuple[str, ...] = ("standin_client",), mode: str = "ready") -> Any:
-        return dataclasses.replace(
-            self.settings(server, mode=mode), event_log=EventLogSettings(CONTRACT_V1, SCHEMAS, modules)
-        )
+class SessionLogs(RustDosCase):
+    def log_settings(self, modules: tuple[str, ...] = ("support",), mode: str = "ready") -> Any:
+        return self.settings(mode, event_log=EventLogSettings(CONTRACT_V1, SCHEMAS, modules))
 
     def test_a_session_writes_a_log_that_reads_back_as_the_run_it_recorded(self) -> None:
-        server = StandinServer(waits=["breakpoint"])
-        settings = self.log_settings(server)
+        settings = self.log_settings()
         log_path = settings.run_directory / "events.jsonl"
-        with DosboxSession(settings) as session:
+        with RustDosSession(settings) as session:
             header = json.loads(lines(log_path)[0])
-            # The header is on disk before the guest starts.
-            self.assertEqual(server.methods()[:2], ["capabilities", "start"])
             session.log_event("stop", {"frame": 0, "ip": "0x0100"})
             self.assertEqual(len(lines(log_path)), 2)
-            self.assertEqual(session.observe(session.continue_(), timeout=5, poll_ms=50).status, "completed")
+            self.assertEqual(session.observe(session.step(), timeout=5, poll_ms=50).status, "completed")
             session.log_event("input", {"key": "enter"})
             session.finish_log(OUTCOME)
             self.assertEqual(session.event_log_path, log_path.resolve())
@@ -413,53 +406,49 @@ class SessionLogs(SessionCase):
         self.assertEqual(log.session, session.token)
         self.assertEqual(header["session"], session.token)
         self.assertEqual(len(log.events), 2)
-        standin = Path(sys.modules["standin_client"].__file__).resolve()  # type: ignore[arg-type]
-        self.assertEqual(log.modules[0].sha256, hashlib.sha256(standin.read_bytes()).hexdigest())
+        support = Path(sys.modules["support"].__file__).resolve()  # type: ignore[arg-type]
+        self.assertEqual(log.modules[0].sha256, hashlib.sha256(support.read_bytes()).hexdigest())
         self.assertEqual(record["event_log"], str(log_path.resolve()))
         self.assertIsNone(record["run_failure"])
 
     def test_a_named_module_that_is_not_imported_refuses_the_session_before_anything_starts(self) -> None:
-        server = StandinServer()
-        settings = self.log_settings(server, modules=("standin_client", "synthetic_never_imported"))
+        settings = self.log_settings(modules=("support", "synthetic_never_imported"))
         with self.assertRaisesRegex(ModuleRefused, "synthetic_never_imported is not imported"):
-            DosboxSession(settings).start()
-        self.assertEqual(server.endpoints, [])
+            RustDosSession(settings).start()
         self.assertFalse(self.lock_path.exists())
         self.assertFalse((settings.run_directory / "events.jsonl").exists())
         self.assertFalse((settings.run_directory / "drive-c").exists())
 
     def test_a_held_lock_refuses_the_session_and_leaves_the_run_directory_reusable(self) -> None:
         holder = RunLock.acquire(self.lock_path, "other-session", processes.current())
-        server = StandinServer()
-        settings = self.log_settings(server)
+        settings = self.log_settings()
         try:
             with self.assertRaises(LockHeld):
-                DosboxSession(settings).start()
+                RustDosSession(settings).start()
             self.assertEqual(list(settings.run_directory.iterdir()), [])
         finally:
             holder.release()
-        with DosboxSession(settings) as session:
+        with RustDosSession(settings) as session:
             session.finish_log(OUTCOME)
         read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_once_the_log_has_its_outcome_the_guest_is_not_resumed_or_changed(self) -> None:
         for end in ("finish", "fail"):
             with self.subTest(end):
-                server = StandinServer()
-                settings = self.log_settings(server)
-                with DosboxSession(settings) as session:
+                settings = self.log_settings()
+                with RustDosSession(settings) as session:
                     if end == "finish":
                         session.finish_log(OUTCOME)
                     else:
                         session.fail_log("the probe saw the wrong screen")
-                    sent = len(server.calls)
+                    before = session.client.journal(0)["last"]
                     with self.assertRaisesRegex(RunEnded, "ends with its outcome"):
                         session.continue_()
                     with self.assertRaises(RunEnded):
-                        session.client.step(session.session_id)
+                        session.step()
                     with self.assertRaises(RunEnded):
                         session.write(FieldContract("synthetic-state/1", ()), "counter", b"\0\0", "0" * 64)
-                    self.assertEqual(len(server.calls), sent)
+                    self.assertEqual(session.client.journal(0)["last"], before)
                     # Logging after the outcome is refused, but the guest has not run since, so
                     # the run has not failed.
                     with self.assertRaisesRegex(LogEntryRefused, "already ends with its outcome"):
@@ -469,33 +458,30 @@ class SessionLogs(SessionCase):
                     read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_session_closed_before_its_outcome_leaves_an_incomplete_log(self) -> None:
-        server = StandinServer()
-        settings = self.log_settings(server)
-        with DosboxSession(settings) as session:
+        settings = self.log_settings()
+        with RustDosSession(settings) as session:
             session.log_event("stop", {"frame": 0, "ip": "0x0100"})
         with self.assertRaises(LogIncomplete):
             read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_refused_event_fails_the_run(self) -> None:
-        server = StandinServer()
-        settings = self.log_settings(server)
-        with DosboxSession(settings) as session:
+        settings = self.log_settings()
+        with RustDosSession(settings) as session:
             with self.assertRaisesRegex(LogEntryRefused, "fails its schema"):
                 session.log_event("stop", {"frame": "zero", "ip": "0x0100"})
             self.assertIn("fails its schema", session.run_failure or "")
-            sent = len(server.calls)
+            before = session.client.journal(0)["last"]
             with self.assertRaises(RunFailed):
                 session.continue_()
-            self.assertEqual(len(server.calls), sent)
+            self.assertEqual(session.client.journal(0)["last"], before)
             with self.assertRaises(LogEntryRefused):
                 session.finish_log(OUTCOME)
         with self.assertRaisesRegex(OutcomeFailed, "fails its schema"):
             read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_failed_write_ends_the_log_with_the_run_failure(self) -> None:
-        server = StandinServer()
-        settings = self.log_settings(server)
-        with DosboxSession(settings) as session:
+        settings = self.log_settings()
+        with RustDosSession(settings) as session:
             session.log_event("stop", {"frame": 0, "ip": "0x0100"})
             with self.assertRaises(WriteOutsideContract):
                 session.write(FieldContract("synthetic-state/1", ()), "counter", b"\0\0", "0" * 64)
@@ -505,16 +491,14 @@ class SessionLogs(SessionCase):
             read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_session_that_does_not_start_ends_its_log_as_failed(self) -> None:
-        server = StandinServer()
-        settings = self.log_settings(server, mode="exit-early")
+        settings = self.log_settings(mode="exit-early")
         with self.assertRaises(EmulatorExited):
-            DosboxSession(settings).start()
-        with self.assertRaisesRegex(OutcomeFailed, "The session did not start: The emulator exited with code 3"):
+            RustDosSession(settings).start()
+        with self.assertRaisesRegex(OutcomeFailed, "The session did not start: .*code 3"):
             read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_session_without_an_event_log_refuses_events(self) -> None:
-        server = StandinServer()
-        with DosboxSession(self.settings(server)) as session:
+        with RustDosSession(self.settings()) as session:
             self.assertIsNone(session.event_log_path)
             with self.assertRaisesRegex(SessionError, "keeps no event log"):
                 session.log_event("stop", {"frame": 0, "ip": "0x0100"})

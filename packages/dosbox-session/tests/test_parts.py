@@ -1,4 +1,4 @@
-"""The generated configuration, the lock record, process identity and the stale-lock command."""
+"""Request IDs, the lock record, process identity and the stale-lock command."""
 
 from __future__ import annotations
 
@@ -15,10 +15,7 @@ from unittest import mock
 from dinorefurb_dosbox_session import (
     DEFAULT_LOCK_PATH,
     LOCK_PATH_VARIABLE,
-    ConfigurationRefused,
-    EmulatorConfig,
     LockHeld,
-    Media,
     ProcessIdentity,
     RequestIds,
     read_lock,
@@ -27,53 +24,9 @@ from dinorefurb_dosbox_session import (
 )
 from dinorefurb_dosbox_session import processes
 from dinorefurb_dosbox_session.cli import run
-from dinorefurb_dosbox_session.config import dosbox_conf
 from dinorefurb_dosbox_session.lock import RunLock
 
 from support import PYTHON, exited_identity, windows_only
-
-DRIVE = Path(r"C:\runs\one\drive-c")
-
-
-class GeneratedConfig(unittest.TestCase):
-    def test_host_audio_is_muted_and_emulated_devices_are_left_configured(self) -> None:
-        text = dosbox_conf(EmulatorConfig(sections={"sblaster": {"sbtype": "sb16"}}), DRIVE, "tok")
-        autoexec = text.split("[autoexec]\n", 1)[1].splitlines()
-        self.assertEqual(autoexec[0], "mixer master 0:0 /noshow")
-        self.assertIn("[midi]\nmididevice=none", text)
-        self.assertIn("[sblaster]\nsbtype=sb16", text)
-        self.assertNotIn("nosound", text)
-        self.assertEqual(autoexec[1], f'mount c "{DRIVE}"')
-        self.assertEqual(autoexec[-1], "echo tok> C:\\DRREADY.TXT")
-
-    def test_keeping_host_sound_leaves_the_mixer_and_midi_alone(self) -> None:
-        text = dosbox_conf(EmulatorConfig(keep_host_sound=True), DRIVE, "tok")
-        self.assertNotIn("mixer master", text)
-        self.assertNotIn("mididevice", text)
-
-    def test_media_are_mounted_read_only_before_the_marker(self) -> None:
-        media = (Media("D", Path(r"C:\discs\a.iso"), "iso"), Media("e", Path(r"C:\media\b"), "directory"))
-        lines = dosbox_conf(EmulatorConfig(media=media), DRIVE, "tok").splitlines()
-        self.assertIn('imgmount d "C:\\discs\\a.iso" -t iso', lines)
-        self.assertIn('mount e "C:\\media\\b" -ro', lines)
-        self.assertTrue(lines[-1].startswith("echo tok>"))
-
-    def test_settings_that_break_the_debugger_or_that_the_session_owns_are_refused(self) -> None:
-        refused = [
-            EmulatorConfig(sections={"mixer": {"nosound": "true"}}),
-            EmulatorConfig(sections={"mixer": {"nosound": "on"}}),
-            EmulatorConfig(sections={"mixer": {"nosound": "enabled"}}),
-            EmulatorConfig(sections={"cpu": {"cycles": "max\n[autoexec]\nexit"}}),
-            EmulatorConfig(sections={"autoexec": {"x": "y"}}),
-            EmulatorConfig(sections={"midi": {"mididevice": "default"}}),
-            EmulatorConfig(media=(Media("C", Path("x"), "directory"),)),
-            EmulatorConfig(media=(Media("D", Path("x"), "iso"), Media("d", Path("y"), "iso"))),
-        ]
-        for config in refused:
-            with self.subTest(config=config), self.assertRaises(ConfigurationRefused):
-                dosbox_conf(config, DRIVE, "tok")
-        dosbox_conf(EmulatorConfig(keep_host_sound=True, sections={"midi": {"mididevice": "default"}}), DRIVE, "t")
-        dosbox_conf(EmulatorConfig(sections={"mixer": {"nosound": "false"}}), DRIVE, "t")
 
 
 class RequestIdNamespaces(unittest.TestCase):

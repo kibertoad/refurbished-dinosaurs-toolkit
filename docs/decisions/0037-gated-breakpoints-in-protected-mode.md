@@ -1,6 +1,6 @@
 # ADR 0037: gated breakpoints in protected mode, and revisions the gate changes itself
 
-Status: accepted. Amends decisions 4 and 5 of
+Status: superseded by [ADR 0050](0050-rust-dos-only-sessions.md), which removed gated breakpoints. Amended decisions 4 and 5 of
 [ADR 0032](0032-gated-breakpoints-for-polling-waits.md).
 
 ## Context

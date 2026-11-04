@@ -3,8 +3,8 @@
 Runs a real rust-dos, so it never runs in CI. It generates a synthetic DOS program, starts it in an
 owned session with an argument on its command line and a Sound Blaster and Ultrasound away from
 rust-dos's defaults, reads ``BLASTER`` and ``ULTRASND`` from the program's environment, which must
-name those cards, reads the text screen with its attributes,
-sets a breakpoint, continues to it and reads the registers there. At the breakpoint
+name those cards, reads the text screen with its attributes, checks that the sound goes to
+rust-dos's null output, sets a breakpoint, continues to it and reads the registers there. At the breakpoint
 it makes a guarded write to a word the program loads next, reads it back, and steps over the load
 to check that the guest sees the new value. It then checks that the server refuses a write whose
 state precondition is stale, and runs the program to its exit. A strict-match save state taken at
@@ -114,6 +114,8 @@ def main() -> int:
         screen = client.screen()
         attrs, lines = screen.get("attrs"), screen.get("lines")
         checks["screen_attrs"] = isinstance(attrs, list) and isinstance(lines, list) and len(attrs) == len(lines)
+        audio = client.status().get("audio") or {}
+        checks["audio_driver"] = audio.get("driver")
         cs = str(session.entry["registers"]["cs"])
         client.set_breakpoint(f"{cs}:{BREAKPOINT_OFFSET:04X}")
         observation = session.observe(session.continue_(), timeout=arguments.timeout)
@@ -219,6 +221,7 @@ def main() -> int:
         and checks.get("blaster") == EXPECTED_BLASTER
         and checks.get("ultrasnd") == EXPECTED_ULTRASND
         and checks.get("screen_attrs") is True
+        and checks.get("audio_driver") == "null"
         and checks.get("observation") == "completed"
         and checks.get("stop_reason") == "breakpoint"
         and checks.get("ip") == hex(BREAKPOINT_OFFSET)

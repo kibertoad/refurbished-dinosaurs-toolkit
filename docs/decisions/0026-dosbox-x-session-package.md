@@ -1,6 +1,6 @@
 # ADR 0026: a shared package for owned DOSBox-X debugger sessions
 
-Status: accepted. Plans the `dinorefurb-dosbox-session` package; no code ships with this record. For a
+Status: accepted; its DOSBox-X backend is superseded by [ADR 0050](0050-rust-dos-only-sessions.md), which leaves rust-dos as the package's only backend. The run lock, drives, records, guarded writes and event log it planned stand. Plans the `dinorefurb-dosbox-session` package; no code ships with this record. For a
 rust-dos run started from a checkpoint, the empty C: is amended by
 [ADR 0041](0041-rust-dos-save-states.md): C: is a fresh copy of the one the checkpoint kept.
 

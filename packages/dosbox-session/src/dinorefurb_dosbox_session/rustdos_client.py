@@ -12,14 +12,32 @@ from __future__ import annotations
 
 import base64
 import http.client
+import itertools
 import json
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .client import RequestIds
 from .errors import ServerRefused
+
+
+class RequestIds:
+    """Request IDs for one client: ``<session>.c<client>.<n>``.
+
+    Each client on a session gets its own number, so two clients never send the same ID.
+    """
+
+    def __init__(self, session: str, client: int) -> None:
+        self.prefix = f"{session}.c{client}"
+        self._counter = itertools.count(1)
+        #: The ID :meth:`next` gave last, or ``None`` before the first.
+        self.last: str | None = None
+
+    def next(self) -> str:
+        """The next ID in this client's namespace."""
+        self.last = f"{self.prefix}.{next(self._counter)}"
+        return self.last
 
 
 @dataclass(frozen=True)

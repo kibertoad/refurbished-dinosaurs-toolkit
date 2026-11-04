@@ -88,7 +88,7 @@ class StartAndStop(RustDosCase):
         self.assertEqual(data["backend"], "rust-dos")
         self.assertEqual(len(data["emulator"]["sha256"]), 64)
         self.assertEqual(data["server"]["api_version"], 1)
-        self.assertEqual(data["server"]["build"]["commit_short"], "5a23d2c")
+        self.assertEqual(data["server"]["build"]["commit_short"], "3bdb0ef")
         self.assertNotIn("req", data["server"])
         self.assertRegex(data["endpoint"], r"^127\.0\.0\.1:\d+$")
         self.assertEqual(data["host_sound"], "muted")
@@ -114,7 +114,8 @@ class StartAndStop(RustDosCase):
         self.assertEqual(arguments[arguments.index("--debug-server") + 1], "127.0.0.1:0")
         self.assertEqual(arguments[arguments.index("-d") + 1], str(settings.run_directory.resolve() / "drive-c"))
         launched = standin(settings)
-        self.assertEqual(launched["sdl"], {"SDL_AUDIODRIVER": "dummy", "SDL_VIDEODRIVER": "dummy"})
+        self.assertEqual(launched["sdl"], {"SDL_VIDEODRIVER": "dummy"})
+        self.assertEqual(arguments[arguments.index("--audio-output") + 1], "null")
         self.assertEqual(
             launched["config"],
             "[sound]\nsbtype=sb16\nsbbase=220\nirq=7\ndma=1\nhdma=5\ngus=true\ngusbase=240\ngusirq=5\ngusdma=3\n",
@@ -186,6 +187,8 @@ class StartAndStop(RustDosCase):
         with RustDosSession(settings) as session:
             data = record(session)
         self.assertEqual(standin(settings)["sdl"], {})
+        arguments = data["arguments"]
+        self.assertEqual(arguments[arguments.index("--audio-output") + 1], "sdl")
         self.assertEqual((data["host_sound"], data["window"]), ("kept", "shown"))
 
     def test_the_target_is_queued_behind_a_batch_file_that_is_still_ending(self) -> None:
@@ -273,6 +276,7 @@ class Refusals(RustDosCase):
             ({"config": RustDosConfig(media=(Media("D", self.root, "directory"), Media("d", self.root, "iso")))}, "share"),
             ({"emulator_arguments": ("--config", "other.conf")}, "sets --config itself"),
             ({"emulator_arguments": ("--no-config",)}, "sets --no-config itself"),
+            ({"emulator_arguments": ("--audio-output=sdl",)}, "sets --audio-output itself"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster("sb1"))}, "model 'sb1' is not one rust-dos takes"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x225))}, r"base 0x225 .*0x210, 0x220"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x290))}, "base 0x290"),
@@ -365,7 +369,7 @@ class Refusals(RustDosCase):
                     RustDosSession(self.settings(mode, readiness_timeout=timeout)).start()
                 self.assertFalse(self.lock_path.exists())
 
-    def test_a_held_run_lock_refuses_a_rust_dos_session_as_it_does_a_dosbox_one(self) -> None:
+    def test_a_held_run_lock_refuses_the_session(self) -> None:
         holder = RunLock.acquire(self.lock_path, "other-session", processes.current())
         self.addCleanup(holder.release)
         settings = self.settings()
