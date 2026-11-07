@@ -11,6 +11,9 @@ the pregap and length in sectors. The references disagree on whether a pregap is
 previous track's sectors and this track's INDEX 01 are exactly the pregap's sectors, and is not
 stored when there are none. A layout that is neither is refused. Track 1's pregap is the 150
 sectors before LBA 0, which the ``.mdf`` does not store.
+
+Header offset 84 gives the table of DPM data (see :mod:`.dpm`). The reader keeps the first DPM
+block, as libmirage and Aaru do, and the writer writes one when the disc carries DPM data.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from . import dpm
 from .ccd import SUBCHANNEL_BYTES, control, flags
 from .disc import MSF_OFFSET, RAW_SECTOR, Disc, DiscError, Track, msf
 
@@ -41,6 +45,8 @@ MODES = {
 # 2,336 bytes of formless Mode 2, so a CD-XA data track would read from the wrong offset.
 WRITTEN_MODES = {"AUDIO": 0xA9, "MODE1": 0xAA, "MODE2": 0xEC}
 CD_MEDIA = {0x00: "CD-ROM", 0x01: "CD-R", 0x02: "CD-RW"}
+# Alcohol stores no file name, only a wildcard for the descriptor's own name with this extension.
+MDF_NAME = "*.mdf".encode("utf-16-le") + b"\x00\x00"
 
 
 @dataclass
@@ -125,7 +131,7 @@ def read_mds(path: Path) -> Disc:
             f"{path.name} holds {sessions} sessions. Only single-session images are read; the archiver "
             "does not read an MDS image's sessions"
         )
-    (sessions_offset,) = reader.unpack("<I", 80, "header")
+    sessions_offset, dpm_offset = reader.unpack("<II", 80, "header")
     _, _, _, all_blocks, _, first, last, _, blocks_offset = reader.unpack("<iiHBBHHII", sessions_offset, "session block")
     blocks = []
     for index in range(all_blocks):
@@ -174,7 +180,8 @@ def read_mds(path: Path) -> Disc:
     image = _image_file(path, blocks[0].file)
     if not image.is_file():
         raise DiscError(f"{image.name} does not exist next to {path.name}")
-    return Disc(_tracks(path, image, blocks), origin=path)
+    positions = dpm.read_table(data, dpm_offset, path.name) if dpm_offset else None
+    return Disc(_tracks(path, image, blocks), origin=path, dpm=positions)
 
 
 def _tracks(path: Path, image: Path, blocks: list[_Block]) -> list[Track]:
@@ -270,7 +277,8 @@ def render_mds(disc: Disc, offsets: list[int]) -> bytes:
     # Header: version 1.5 as Alcohol 120% writes it, a CD-ROM, one session. The first of the two
     # unknown 16-bit values is 2 in Alcohol's files and DAEMON Tools expects it (Aaru).
     header = SIGNATURE + struct.pack("<BBHHHH", 1, 5, 0x00, 1, 2, 0) + bytes(HEADER_BYTES - 26)
-    header = header[:80] + struct.pack("<II", session_at, 0)
+    dpm_at = name_at + len(MDF_NAME) if disc.dpm is not None else 0
+    header = header[:80] + struct.pack("<II", session_at, dpm_at)
     session = struct.pack("<iiHBBHHII", -MSF_OFFSET, disc.total_sectors, 1, count, 3, 1, len(tracks), 0, blocks_at)
     blocks = [
         _block(0, 0x10 | control(first), 0xA0, (first.number, disc_type, 0), extras_at),
@@ -285,8 +293,8 @@ def render_mds(disc: Disc, offsets: list[int]) -> bytes:
         )
         extras.append(struct.pack("<II", MSF_OFFSET if i == 0 else track.pregap, track.length))
     footer = struct.pack("<IIII", name_at, 1, 0, 0)
-    name = "*.mdf".encode("utf-16-le") + b"\x00\x00"
-    return header + session + b"".join(blocks) + b"".join(extras) + footer + name
+    positions = dpm.render_table(disc.dpm, dpm_at) if disc.dpm is not None else b""
+    return header + session + b"".join(blocks) + b"".join(extras) + footer + MDF_NAME + positions
 
 
 def write_mds(disc: Disc, directory: Path, name: str) -> list[Path]:

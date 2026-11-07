@@ -1,7 +1,8 @@
 # ADR 0004: personal disc archiving through established dumpers
 
 Status: accepted. Decision 3 is extended, and the consequence that Alcohol MDS/MDF and Nero NRG
-are not produced is superseded, by [ADR 0047](0047-alcohol-and-nero-images.md).
+are not produced is superseded, by [ADR 0047](0047-alcohol-and-nero-images.md). Decision 2 is
+extended by [ADR 0050](0050-dpm-measurement.md): the archiver times reads itself to measure DPM.
 
 ## Context
 

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import zlib
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import xxhash
 
-from . import cdda, ccd, dataerrors, isofs, mds, nrg, redump, tools
+from . import cdda, ccd, dataerrors, dpmmeasure, isofs, mds, nrg, redump, tools
 from .cue import read_cue, read_cue_metadata, read_iso
 from .disc import (
     RAW_SECTOR,
@@ -38,6 +39,8 @@ from .disc import (
     describe_ranges,
     session_gap,
 )
+from .dpm import read_sidecar, sidecar_path, trigger, write_sidecar
+from .dpmmeasure import Clock, DpmUnavailable
 from .formats import (
     FORMATS,
     METADATA,
@@ -82,10 +85,18 @@ def check_name(name: str) -> str:
 
 @contextmanager
 def open_source(path: Path, work: Path, log: Log) -> Iterator[Disc]:
-    """Open a cue sheet, ISO, CloneCD, CHD, Alcohol 120% or Nero image as a Disc. A CHD is unpacked under ``work``."""
+    """Open a cue sheet, ISO, CloneCD, CHD, Alcohol 120% or Nero image as a Disc. A CHD is unpacked under ``work``.
+
+    A cue sheet takes the DPM data of the measurement beside it (``<name>.dpm.json``, see
+    ``dpm.sidecar_path``), as a drive's dump keeps it, and an Alcohol 120% image its own.
+    """
     suffix = path.suffix.lower()
     if suffix == ".cue":
-        yield read_cue(path)
+        disc = read_cue(path)
+        sidecar = sidecar_path(path)
+        if sidecar.is_file():
+            disc.dpm = read_sidecar(sidecar)
+        yield disc
     elif suffix == ".iso":
         yield read_iso(path)
     elif suffix == ".ccd":
@@ -532,6 +543,14 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
         _verify_game_dir(output, disc, reference, result)
     if any(t.subchannel for t in disc.tracks):
         result.not_compared.append("the subchannel the source stores after each sector, which the archiver skips")
+    if disc.dpm is not None:
+        if kind == "mds":
+            result.compared.append("DPM data")
+            with open_source(output.entry, work, log) as copy:
+                if copy.dpm != disc.dpm:
+                    result.differences.append("the DPM data differs from the source")
+        else:
+            result.not_compared.append(f"the DPM data, which {format_by_id(kind).holder or f'the {kind} format'} does not hold")
     return result
 
 
@@ -649,6 +668,11 @@ def derive(
         if any(t.subchannel for t in disc.tracks):
             output.notes.append(
                 "The source stores subchannel after each sector. The archiver skips it, so this copy does not carry it."
+            )
+        if disc.dpm is not None and identifier != "mds":
+            output.notes.append(
+                "The source carries DPM data (where the sectors lie on the disc), which this format has no place for. "
+                "The mds copy holds it."
             )
         log(f"Verifying {identifier}")
         verification = verify_output(output, disc, reference, root, log)
@@ -906,6 +930,8 @@ def archive(
     allow_download: bool = True,
     read_offset: int | None = None,
     dat: Path | None = None,
+    dpm: str = "auto",
+    dpm_settings: dpmmeasure.Settings | None = None,
 ) -> dict[str, object]:
     """Copy a disc from ``drive``, or take the ``image`` already made, and write ``formats``.
 
@@ -931,11 +957,19 @@ def archive(
     (see ``backends.Dump``), and is null when the dump had none. ``discAnalysis`` is what
     redumper's steps after the dump found on the disc, from its log (see
     ``backends.redumper_disc_analysis``), and null for any other source.
+
+    ``dpm`` decides whether a drive's disc gets a DPM measurement after the dump (see
+    :func:`measure_dpm`): ``auto`` when redumper's analysis calls for one, ``always`` or ``never``.
+    ``dpm_settings`` are the measurement's speed, resolution and passes. ``source.dpm`` records it.
     """
     from . import backends
 
     if (drive is None) == (image is None):
         raise DiscError("give either a drive or an image")
+    if dpm not in DPM_MODES:
+        raise DiscError(f"--dpm is one of {', '.join(DPM_MODES)}, not {dpm!r}")
+    settings = dpm_settings or dpmmeasure.Settings()
+    settings.check()
     if read_offset is not None and (drive is None or backend != "cdrdao"):
         raise DiscError(
             "a read offset is only corrected for the cdrdao backend; redumper corrects the drive's offset itself, "
@@ -965,6 +999,8 @@ def archive(
         log(f"Copying the disc in {drive} with {chosen.title}")
         ripped = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
         dump = ripped.path
+        # A measurement left by an earlier copy into this folder is not this disc's.
+        sidecar_path(dump).unlink(missing_ok=True)
         corrected: bool | None = None
         applied = read_offset
         configuration: dict[str, object] | None = None
@@ -1007,6 +1043,7 @@ def archive(
             "driveConfiguration": configuration,
             "dataErrors": ripped.data_errors,
             "discAnalysis": analysis,
+            "dpm": None,
         }
     else:
         assert image is not None
@@ -1020,11 +1057,87 @@ def archive(
             "driveConfiguration": None,
             "dataErrors": None,
             "discAnalysis": None,
+            "dpm": None,
         }
     with open_source(dump, output, log) as disc:
+        if drive is not None:
+            source["dpm"] = measure_dpm(drive, disc, dump, output, dpm, settings, source["discAnalysis"], log)  # type: ignore[arg-type]
+        else:
+            source["dpm"] = None if disc.dpm is None else {
+                "status": "fromSource",
+                "startSector": disc.dpm.start,
+                "resolution": disc.dpm.resolution,
+                "entries": len(disc.dpm.angles),
+            }
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(resolve_formats(formats if formats is not None else [RECOMMENDED], profile, disc.layout, raw))
         return derive(disc, output, name, wanted, profile, log, source, unread, loaded)
+
+
+DPM_MODES = ("auto", "always", "never")
+
+
+def open_dpm_drive(drive: str) -> tuple[dpmmeasure.Drive, Clock]:
+    """The drive the DPM measurement times, and the clock it is timed with (see ``scsi``)."""
+    from . import scsi
+
+    return scsi.open_drive(drive), time.perf_counter_ns
+
+
+def measure_dpm(
+    drive: str,
+    disc: Disc,
+    dump: Path,
+    output: Path,
+    mode: str,
+    settings: dpmmeasure.Settings,
+    analysis: dict[str, object] | None,
+    log: Log,
+) -> dict[str, object] | None:
+    """Measure the DPM of the disc in ``drive`` when ``mode`` and redumper's ``analysis`` call for it.
+
+    Returns the manifest's ``source.dpm``: None when nothing called for a measurement, otherwise
+    its ``trigger`` and ``status``. ``measured``: the data was accepted, set on ``disc`` and kept
+    in ``<name>.dpm.json`` beside the ``dump`` with the record (see ``dpmmeasure.measure`` for its
+    fields). ``refused``: the checks rejected it, and the file keeps the record and its reason.
+    ``unavailable``: it could not run here. ``skipped``: ``never`` kept it from running although
+    redumper's analysis called for it. The copy goes on in every case.
+    """
+    reason = trigger(analysis)
+    if mode == "never" or (mode == "auto" and reason is None):
+        if reason is None:
+            return None
+        log(f"DPM: {reason}, but --dpm never skips the measurement, so the copy lacks the data the protection checks.")
+        return {"trigger": reason, "status": "skipped", "reason": "--dpm never was given"}
+    cause = reason or "--dpm always was given"
+    if not disc.data_tracks:
+        log("DPM: not measured: the disc has no data track")
+        return {"trigger": cause, "status": "unavailable", "reason": "the disc has no data track"}
+    track = disc.first_data_track()
+    try:
+        handle, clock = open_dpm_drive(drive)
+    except DpmUnavailable as error:
+        log(f"DPM: not measured: {error}")
+        return {"trigger": cause, "status": "unavailable", "reason": str(error)}
+    log(
+        f"DPM: {cause}. Timing reads of the data track (sectors {track.index1} to {track.end - 1}) at {settings.speed}x "
+        f"in {settings.passes} passes, which takes several minutes. Leave the computer idle meanwhile."
+    )
+    try:
+        result = dpmmeasure.measure(handle, clock, track.index1, track.end, settings, log)
+    finally:
+        close = getattr(handle, "close", None)
+        if close is not None:
+            close()
+    path = sidecar_path(dump)
+    record = {"trigger": cause, **result.record, "file": path.relative_to(output).as_posix()}
+    write_sidecar(path, result.dpm, record, result.details)
+    if result.dpm is not None:
+        disc.dpm = result.dpm
+        log(f"DPM: measured {len(result.dpm.angles)} steps; the mds copy holds them and {path.name} keeps the measurement.")
+    else:
+        log(f"DPM: the measurement was refused, so no copy holds DPM data; {path.name} keeps what was measured.")
+    return record
 
 
 def _log_disc_analysis(log: Log, analysis: dict[str, object] | None) -> None:

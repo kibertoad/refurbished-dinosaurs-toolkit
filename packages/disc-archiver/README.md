@@ -71,6 +71,51 @@ Then `redumper split` writes the image, with `--force-split` while bad sectors r
 | `tooMany` | More than 2,000 bad sectors, so they were not read again. | `3` |
 | `unlocated` | Bad sectors remain, and the disc's ISO 9660 volume could not be read to say which files hold them. | `3` |
 
+### Data positions (DPM)
+
+Some copy protections time reads to check where the sectors physically lie on the pressed disc:
+SecuROM 4.8 and later ("SecuROM NEW", up to 7.x on CD), StarForce 1 to 3, VOB ProtectCD V5 and
+CD-Cops. A copy holding every sector still fails them. Alcohol 120% measures the positions (Data
+Position Measurement, DPM) and stores them in its `.mds`, and CDEmu delays reads by them, so the
+protected disc runs from the image without a crack. redumper does not measure them.
+
+After the dump, `rip` measures them itself when `--dpm` says so
+([ADR 0050](../../docs/decisions/0050-dpm-measurement.md)):
+
+| `--dpm` | Measures |
+|---|---|
+| `auto` (the default) | when redumper's info step finds SecuROM scheme 4 (the 10-mark layout of SecuROM 4.8 and later) or marks of an `unknown` scheme |
+| `always` | every disc; for StarForce, ProtectCD and CD-Cops, which redumper does not detect |
+| `never` | no disc. A trigger it skips is recorded, so the manifest says the copy lacks the data |
+
+The measurement times single-sector READ(10) commands with Force Unit Access over the first data
+track, at the speed `--dpm-speed` fixes (4x by default; Alcohol 120% advises the lowest a drive
+offers). The time between the completions of two back-to-back reads, divided by the disc's
+rotation period, gives the angle between their sectors to within whole turns, and the density of
+the steps before gives the whole turns. The period is calibrated every 20,000 sectors from sweeps
+of read pairs one to 64 sectors apart. Entries are `--dpm-resolution` sectors apart (50), in
+`--dpm-passes` passes (2) whose disagreement is the jitter. It takes several minutes; leave the
+computer idle meanwhile. It runs on Windows only, through SCSI pass-through, with the drive the
+dump was made in.
+
+It is refused, and written into no copy, when a calibration fails (two sweeps disagree, the times
+stay flat or fit no turning disc, or the sectors per turn lie outside a CD's 6 to 26), when more
+than 1% of timed reads come back in under half the shortest calibration time (the drive answers
+from its cache despite Force Unit Access), when more than 2% of the steps cannot be measured even
+when read again, when the passes disagree by more than 5/256 of a turn at the median step, when
+more than 1% of the steps have a density outside a CD's, or when the angles do not grow. The copy
+goes on either way. A measurement that interpolated some steps, made one pass, or whose density
+does not grow outwards is kept with a warning.
+
+An accepted measurement goes into the `mds` copy as an Alcohol 120% DPM block, and
+`archival/<name>.dpm.json` keeps it with every calibration and step. `convert` of the archival
+cue sheet takes the `.dpm.json` beside it, and of an `.mds` the image's own DPM block, into the
+`mds` copy. Other formats have no place for it and list it under `notCompared`. The manifest
+records it in [`source.dpm`](#the-output-folder).
+
+The measurement has been tested against a simulated drive only. Compare it with Alcohol 120%'s
+DPM of the same disc where you can.
+
 ### Downloading redumper
 
 The release to download is pinned in
@@ -98,7 +143,7 @@ Writing the copy (`--format`, repeat for several):
 | `bincue` | one `.bin` and a `.cue` | The same in one file. Read by most tools and by the toolkit's `OriginalContentSource`. |
 | `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. The archiver writes the catalog number, the indexes and the FLAGS a track's control field carries into the `.ccd`, and no ISRC codes or CD-Text. |
 | `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. chdman releases up to MAME 0.289 store no sessions; see [Sessions](#sessions). A CHD holds no catalog number, ISRC codes, FLAGS, indexes after INDEX 01 or CD-Text. |
-| `mds` | `.mds`, `.mdf` | Every raw sector, without subchannel, with a version 1 Alcohol 120% descriptor. The descriptor holds the FLAGS a track's control field carries and has no place for the catalog number, ISRC codes, indexes after INDEX 01 or CD-Text. Unavailable for a disc of several sessions. |
+| `mds` | `.mds`, `.mdf` | Every raw sector, without subchannel, with a version 1 Alcohol 120% descriptor. The descriptor holds the FLAGS a track's control field carries and the [DPM data](#data-positions-dpm) when the source has it, and has no place for the catalog number, ISRC codes, indexes after INDEX 01 or CD-Text. Unavailable for a disc of several sessions. |
 | `nrg` | `.nrg` | Every raw sector in a version 2 Nero disc-at-once image, with the catalog number, ISRC codes, indexes and the FLAGS a track's control field carries, without CD-Text. Track 1's 150-sector pregap before LBA 0, which the layout stores, is written as zero bytes. Unavailable for a disc of several sessions. |
 | `iso-flac` | `.iso`, one `.flac` per audio track, `.cue` | Data user data and lossless audio from each track's INDEX 01. Needs `ffmpeg`. |
 | `iso-wav` | `.iso`, one `.wav` per audio track, `.cue` | The same with WAV audio: the DOSBox-style sheet. |
@@ -215,6 +260,7 @@ disc-archiver rip --drive E: --output "D:\Discs\My Game" --format reference --ac
 disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso --format files \
     --accept-personal-use                                # formats from a copy you already have
 disc-archiver rip --drive E: --backend cdrdao --read-offset 6 --output out --accept-personal-use
+disc-archiver rip --drive E: --output out --format mds --dpm always --accept-personal-use  # StarForce
 disc-archiver check --input "My Game.cue" --profile disc-profile.json
 disc-archiver check --input "Other copy.cue" --manifest "D:\Discs\My Game\rip-manifest.json"
 disc-archiver check --input "My Game.cue" --dat redump-pc.zip     # against a Redump DAT
@@ -232,7 +278,8 @@ CD; anything else is refused with the reason ([ADR 0047](../../docs/decisions/00
 for example `--backend-arg=--retries=20` for redumper, and `--no-download` keeps it from
 downloading redumper. `rip --read-offset <samples>` corrects a cdrdao dump's audio by the drive's
 read offset; it needs `--backend cdrdao` and is refused with any other backend, since redumper
-corrects the offset itself. `check` prints the copy's fingerprint as JSON, with the profile's
+corrects the offset itself. `rip --dpm`, `--dpm-speed`, `--dpm-resolution` and `--dpm-passes`
+control the [DPM measurement](#data-positions-dpm). `check` prints the copy's fingerprint as JSON, with the profile's
 checks and, given `--manifest`, the comparison described in
 [Checking a copy against a manifest](#checking-a-copy-against-a-manifest). Progress goes to
 standard error and the summary to standard output.
@@ -305,6 +352,7 @@ My Game/
   rip-manifest.json
   archival/      the backend's dump, as it wrote it (rip only)
     offset-corrected/   the cdrdao dump with its audio corrected (rip with --read-offset only)
+    My Game.dpm.json    the DPM measurement (rip only, when one ran)
   bincue/        My Game.cue, My Game.bin, PERSONAL-ARCHIVE-ONLY.txt
   iso/           My Game.iso, PERSONAL-ARCHIVE-ONLY.txt
   files/         My Game/ (the disc's files), PERSONAL-ARCHIVE-ONLY.txt
@@ -403,6 +451,14 @@ My Game/
   - `dataTracks`: each data track of the info step, as its `file`, its `invalidSyncSectors` (sectors without the data sync pattern, which redumper checks no further), `invalidModeSectors` (a mode above 2), `generatedSectors` (user data entirely `0x55` bytes), `msfErrors`, `eccErrors` and `edcErrors` (sectors whose header address, ECC or EDC is wrong) and `nonCompliantEccErrors` (mode 2 form 1 sectors whose ECC covers the header, which redumper counts apart from `eccErrors`), each a `count` and `ranges` of `first` and `last` LBA, zero when redumper logged none, `xaSubheaderMismatches`, the count of mode 2 sectors whose two subheader copies differ, and `redumpInfoErrors`, redumper's count of sectors with a wrong ECC or EDC or differing mode 2 subheader copies, each sector counted once. LBAs count sectors by their position in the dump. Null when the info step did not run, as after data errors.
   - `protectionSchemes`: each SecuROM block of the info step, as `system`, `file` and `scheme` (`1` to `4`, or `unknown`). Null when the info step did not run.
   - `warnings`: every warning of the protection, refine, split, hash and info steps, without the `warning:` prefix, each once, in the order logged. Warnings about the drive and from the dump itself are left out.
+
+  `dpm` is the [DPM measurement](#data-positions-dpm). For a rip it is null when nothing called for one, and otherwise holds `trigger` (why it ran or would have) and `status`:
+  - `measured`: accepted, and held by the `mds` copy. With `drive` (the drive's inquiry), `requestedSpeed`, `startSector` (the data track's INDEX 01), `resolution`, `passes`, `entries`, `file` (the `.dpm.json`, relative to the output folder), `warnings` and `statistics`: `measuredSpeed` (from the sector time the calibrations found), `rotationPeriodMs` (`min` and `max`), `sectorsPerTurn` (median of the first and last tenth of the steps, `min` and `max`), `jitter` (`median` and `p95` disagreement between passes in 1/256 of a turn, null after one pass), `timedReads`, `cacheHits`, `remeasuredSteps`, `interpolatedSteps`, `calibrations` and `calibrationAttempts`.
+  - `refused`: the checks rejected it, and `reason` says which. The same fields, with the statistics gathered up to the refusal and no `entries`.
+  - `unavailable`: it could not run, and `reason` says why: not on Windows, the drive could not be opened, or the disc has no data track.
+  - `skipped`: `--dpm never` kept a triggered measurement from running.
+
+  For `convert`, `dpm` is null, or `status` `fromSource` with `startSector`, `resolution` and `entries` when the source carries DPM data.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the
@@ -699,3 +755,5 @@ The supported imports are the names in `dinorefurb_disc_archiver.__all__`.
 - The CloneCD subchannel is generated, not read: it carries no copy-protection marks. Use the
   redumper dump in `archival` when they matter.
 - Drives are listed on Windows and Linux. On macOS, give `--drive` as redumper names it.
+- DPM is measured on Windows only, over the first data track, and written only into `mds`. An
+  MDS image's DPM table is read for its first DPM block; others are skipped.

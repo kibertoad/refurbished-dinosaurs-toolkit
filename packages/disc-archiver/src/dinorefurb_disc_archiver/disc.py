@@ -13,6 +13,10 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .dpm import Dpm
 
 RAW_SECTOR = 2352
 COOKED_SECTOR = 2048
@@ -382,6 +386,9 @@ class Disc:
     # Where the disc was read from: the cue sheet or ISO file.
     origin: Path | None = None
     gaps: dict[int, SessionGap] = field(default_factory=dict)
+    # Where the sectors lie on the disc, measured in a drive or read from an Alcohol 120% image
+    # (see ``dpm``). Only the ``mds`` format holds it.
+    dpm: Dpm | None = None
 
     def __post_init__(self) -> None:
         if not self.tracks:

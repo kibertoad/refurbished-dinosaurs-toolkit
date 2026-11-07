@@ -121,6 +121,7 @@ checked, and the same on every machine it is kept on.
    | Keep | Why |
    |---|---|
    | `archival/` (redumper's `.scram`, `.subcode`, `.toc`, `.log` and the split dump) | The master. It holds the lead-in, lead-out, subchannel and protection data no other format keeps, and the split dump can be rebuilt from it. Compress it with 7-Zip or zstd for storage. |
+   | `archival/<name>.dpm.json`, `mds/` | For a disc whose protection times reads (SecuROM 4.8 and later, StarForce), the DPM measurement and the only copy that holds it. See [Data positions (DPM)](../packages/disc-archiver/README.md#data-positions-dpm). |
    | `bincue-split/` | The Redump layout, the form disc databases list and most tools read. |
    | `rip-manifest.json` | The content hashes every other copy is checked against. |
 
@@ -191,7 +192,8 @@ closed.
 | `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines; a gap longer than the standard one only through the sector headers of a data track that opens the session |
 | `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289, with the standard gaps |
 | `ccd` | raw | yes | yes | generated from the table of contents | yes, with each gap |
-| `mds`, `nrg` | raw | yes | yes | none | one session only |
+| `mds` | raw | yes | yes | none, but the DPM data when the source has it | one session only |
+| `nrg` | raw | yes | yes | none | one session only |
 | `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none | `REM SESSION` lines |
 | `iso-ogg` | user data | lossy | as a cue `PREGAP` | none | `REM SESSION` lines |
 | `iso` | user data | no | no | none | no |
