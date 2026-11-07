@@ -94,7 +94,10 @@ class Settings:
     def check(self) -> None:
         """:raises DiscError: a setting is outside what the measurement supports."""
         if not 1 <= self.speed <= 16:
-            raise DiscError(f"a DPM speed of {self.speed}x is outside 1x to 16x; drives above it spin too fast to time single sectors")
+            raise DiscError(
+                f"a DPM speed of {self.speed}x is outside 1x to 16x; faster, turns pass during each command and the "
+                "calibration sweeps stop following the disc"
+            )
         if not 10 <= self.resolution <= 1000:
             raise DiscError(f"a DPM resolution of {self.resolution} sectors is outside 10 to 1000")
         if not 1 <= self.passes <= 5:
