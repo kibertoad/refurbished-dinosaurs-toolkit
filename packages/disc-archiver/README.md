@@ -80,7 +80,7 @@ Position Measurement, DPM) and stores them in its `.mds`, and CDEmu delays reads
 protected disc runs from the image without a crack. redumper does not measure them.
 
 After the dump, `rip` measures them itself when `--dpm` says so
-([ADR 0050](../../docs/decisions/0050-dpm-measurement.md)):
+([ADR 0051](../../docs/decisions/0051-dpm-measurement.md)):
 
 | `--dpm` | Measures |
 |---|---|
@@ -104,11 +104,13 @@ than 1% of timed reads come back in under half the shortest calibration time (th
 from its cache despite Force Unit Access), when more than 2% of the steps cannot be measured even
 when read again, when the passes disagree by more than 5/256 of a turn at the median step, when
 more than 1% of the steps have a density outside a CD's, or when the angles do not grow. The copy
-goes on either way. A measurement that interpolated some steps, made one pass, or whose density
-does not grow outwards is kept with a warning.
+goes on either way. A measurement that interpolated some steps, made one pass, whose density
+does not grow outwards, or that the drive read more than a quarter faster or slower than
+`--dpm-speed` asked is kept with a warning.
 
 An accepted measurement goes into the `mds` copy as an Alcohol 120% DPM block, and
-`archival/<name>.dpm.json` keeps it with every calibration and step. `convert` of the archival
+`archival/<name>.dpm.json` keeps it with every calibration and step. When the formats asked for
+include no `mds`, the rip says so, and a later `convert --format mds` of the dump makes the copy. `convert` of the archival
 cue sheet takes the `.dpm.json` beside it, and of an `.mds` the image's own DPM block, into the
 `mds` copy. Other formats have no place for it and list it under `notCompared`. The manifest
 records it in [`source.dpm`](#the-output-folder).
@@ -453,12 +455,12 @@ My Game/
   - `warnings`: every warning of the protection, refine, split, hash and info steps, without the `warning:` prefix, each once, in the order logged. Warnings about the drive and from the dump itself are left out.
 
   `dpm` is the [DPM measurement](#data-positions-dpm). For a rip it is null when nothing called for one, and otherwise holds `trigger` (why it ran or would have) and `status`:
-  - `measured`: accepted, and held by the `mds` copy. With `drive` (the drive's inquiry), `requestedSpeed`, `startSector` (the data track's INDEX 01), `resolution`, `passes`, `entries`, `file` (the `.dpm.json`, relative to the output folder), `warnings` and `statistics`: `measuredSpeed` (from the sector time the calibrations found), `rotationPeriodMs` (`min` and `max`), `sectorsPerTurn` (median of the first and last tenth of the steps, `min` and `max`), `jitter` (`median` and `p95` disagreement between passes in 1/256 of a turn, null after one pass), `timedReads`, `cacheHits`, `remeasuredSteps`, `interpolatedSteps`, `calibrations` and `calibrationAttempts`.
+  - `measured`: accepted, and held by the `mds` copy when the formats include one. With `drive` (the drive's inquiry), `requestedSpeed`, `startSector` (the data track's INDEX 01), `resolution`, `passes`, `entries`, `file` (the `.dpm.json`, relative to the output folder), `warnings` and `statistics`: `measuredSpeed` (from the sector time the calibrations found), `rotationPeriodMs` (`min` and `max`), `sectorsPerTurn` (median of the first and last tenth of the steps, `min` and `max`), `jitter` (`median` and `p95` disagreement between passes in 1/256 of a turn, null after one pass), `timedReads`, `cacheHits`, `remeasuredSteps`, `interpolatedSteps`, `calibrations` and `calibrationAttempts`.
   - `refused`: the checks rejected it, and `reason` says which. The same fields, with the statistics gathered up to the refusal and no `entries`.
   - `unavailable`: it could not run, and `reason` says why: not on Windows, the drive could not be opened, or the disc has no data track.
   - `skipped`: `--dpm never` kept a triggered measurement from running.
 
-  For `convert`, `dpm` is null, or `status` `fromSource` with `startSector`, `resolution` and `entries` when the source carries DPM data.
+  For `convert`, `dpm` is null, or `status` `fromSource` with `startSector`, `resolution` and `entries` when the source carries DPM data. A cue sheet with a `.dpm.json` beside it adds `measurement`, the `dpm` record of the rip that wrote the file; when that measurement holds no data (it was `refused`), `status` is `notInSource` with only `measurement`, so the converted copy still records that it lacks DPM data a protection checks.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the

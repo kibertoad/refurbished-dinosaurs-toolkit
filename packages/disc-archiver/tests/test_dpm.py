@@ -290,6 +290,18 @@ class MeasurementTests(unittest.TestCase):
         self.assertIsNone(result.record["statistics"]["jitter"])
         self.assertIn("one pass was made, so the jitter between passes is unknown", result.record["warnings"])
 
+    def test_a_drive_that_ignores_the_speed_is_kept_with_a_warning(self) -> None:
+        drive = FakeDrive(FakeDisc())
+        drive.speed = 8.0
+        with mock.patch.object(drive, "set_speed", lambda kilobytes_per_second: None):
+            result = run(drive)
+        assert result.dpm is not None
+        self.assertEqual(result.record["statistics"]["measuredSpeed"], 8.0)
+        self.assertIn(
+            "the drive read at 8.0x, not the 4x asked for: it ignored SET CD SPEED or does not offer that speed",
+            result.record["warnings"],
+        )
+
     def test_a_track_too_short_is_refused(self) -> None:
         result = run(FakeDrive(FakeDisc()), end=200)
         self.assertIn("too few to measure", result.record["reason"])
@@ -455,8 +467,56 @@ class ArchiveTests(unittest.TestCase):
             image=out / "archival" / "Game.cue",
             formats=["mds"],
         )
-        expected = {"status": "fromSource", "startSector": 0, "resolution": 10, "entries": 3}
+        expected = {"status": "fromSource", "startSector": 0, "resolution": 10, "entries": 3, "measurement": record}
         self.assertEqual(again["source"]["dpm"], expected)  # type: ignore[index]
+
+    def test_a_convert_keeps_a_refused_measurement(self) -> None:
+        # A rip whose measurement was refused leaves a .dpm.json without data beside the dump; a
+        # later convert of that dump still records that the copy lacks the data.
+        archival = self.dir / "archival"
+        archival.mkdir()
+        sheet = SyntheticDisc(iso_image(), audio_lengths=[200]).write_split(archival, "Game")
+        refused = {"trigger": "redumper found SecuROM scheme 4", "status": "refused", "reason": "the passes disagree"}
+        dpm.write_sidecar(dpm.sidecar_path(sheet), None, refused, {})
+        manifest = pipeline.archive(
+            output=self.dir / "again",
+            profile=BUILTIN_PROFILES["any"],
+            log=silent_log,
+            image=sheet,
+            formats=["mds"],
+        )
+        self.assertEqual(manifest["source"]["dpm"], {"status": "notInSource", "measurement": refused})  # type: ignore[index]
+
+    def test_a_measurement_left_by_an_earlier_copy_is_not_taken(self) -> None:
+        # cdrdao's dump is corrected into archival/offset-corrected, which a cue sheet's
+        # measurement file from an earlier copy into the same folder sits beside.
+        out = self.dir / "out"
+        stale = [out / "archival" / "Game.dpm.json", out / "archival" / "offset-corrected" / "Game.dpm.json"]
+        for path in stale:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dpm.write_sidecar(path, SAMPLE, {}, {})
+        def cdrdao_rip(backend, drive, directory, name, log, extra):  # type: ignore[no-untyped-def]
+            return backends.Dump(SyntheticDisc(iso_image(), audio_lengths=[200]).write_single(directory, name))
+
+        with (
+            mock.patch.object(backends, "choose_backend", return_value=backends.backend_by_id("cdrdao")),
+            mock.patch.object(backends, "rip", side_effect=cdrdao_rip),
+        ):
+            manifest = pipeline.archive(
+                output=out,
+                profile=BUILTIN_PROFILES["any"],
+                log=silent_log,
+                drive="E:",
+                name="Game",
+                formats=["mds"],
+                backend="cdrdao",
+                read_offset=667,
+            )
+        self.assertEqual(manifest["source"]["dump"], "archival/offset-corrected/Game.cue")  # type: ignore[index]
+        self.assertIsNone(manifest["source"]["dpm"])  # type: ignore[index]
+        self.assertEqual([p for p in stale if p.exists()], [])
+        with open_source(out / "mds" / "Game.mds", self.dir, silent_log) as copy:
+            self.assertIsNone(copy.dpm)
 
 
 if __name__ == "__main__":

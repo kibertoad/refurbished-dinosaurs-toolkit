@@ -3,7 +3,7 @@
 Some copy protections time reads to check where sectors physically lie on the pressed disc:
 SecuROM 4.8 and later ("SecuROM NEW"), StarForce 1 to 3, VOB ProtectCD V5 and CD-Cops. A dump
 of sectors cannot hold that, so Alcohol 120% and BlindWrite measure it and store the angle of
-every ``resolution``-th sector. See ADR 0050.
+every ``resolution``-th sector. See ADR 0051.
 
 The layout follows libmirage (``images/image-mds/parser.c`` and ``mirage_disc_get_dpm_data_for_sector``
 in ``mirage/disc.c`` of cdemu) and Aaru's Alcohol 120% image, which agree. Header offset 84 of an
@@ -180,3 +180,20 @@ def read_sidecar(path: Path) -> Dpm | None:
         return Dpm(int(data["startSector"]), int(data["resolution"]), tuple(int(a) for a in data["angles"]))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise DiscError(f"{path.name} cannot be read as a DPM measurement: {error}") from None
+
+
+def read_sidecar_record(path: Path) -> dict[str, object]:
+    """The record of a measurement file: the ``source.dpm`` of the rip that wrote it.
+
+    :raises DiscError: the file is not a measurement the archiver wrote, or its record is not an object.
+    """
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise DiscError(f"{path.name} cannot be read as a DPM measurement: {error}") from None
+    if not isinstance(body, dict) or body.get("dpmSidecar") != SIDECAR_VERSION:
+        raise DiscError(f"{path.name} is not a version {SIDECAR_VERSION} DPM measurement of the archiver")
+    record = body.get("record")
+    if not isinstance(record, dict):
+        raise DiscError(f"{path.name} cannot be read as a DPM measurement: its record is not an object")
+    return record

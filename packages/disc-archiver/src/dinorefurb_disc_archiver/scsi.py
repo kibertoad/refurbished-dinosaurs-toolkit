@@ -3,7 +3,7 @@
 Windows only. ``IOCTL_SCSI_PASS_THROUGH_DIRECT`` on ``\\\\.\\E:`` sends INQUIRY, SET CD SPEED
 and READ(10) of one sector with Force Unit Access. The archiver has no other drive layer (its
 backends are programs), so on Linux and macOS :func:`open_drive` reports the measurement
-unavailable. See ADR 0050.
+unavailable. See ADR 0051.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from .dpmmeasure import DpmUnavailable, DriveError
 
 IOCTL_SCSI_PASS_THROUGH_DIRECT = 0x4D014
 SCSI_IOCTL_DATA_IN = 1
+SCSI_IOCTL_DATA_UNSPECIFIED = 2
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 FILE_SHARE_READ = 1
@@ -110,7 +111,8 @@ class WindowsDrive:
         request.request.Length = ctypes.sizeof(_PassThroughDirect)
         request.request.CdbLength = len(cdb)
         request.request.SenseInfoLength = SENSE_BYTES
-        request.request.DataIn = SCSI_IOCTL_DATA_IN
+        # A command without data, such as SET CD SPEED, declares no direction.
+        request.request.DataIn = SCSI_IOCTL_DATA_IN if length else SCSI_IOCTL_DATA_UNSPECIFIED
         request.request.DataTransferLength = length
         request.request.TimeOutValue = TIMEOUT_SECONDS
         request.request.DataBuffer = ctypes.addressof(self._buffer) if length else None

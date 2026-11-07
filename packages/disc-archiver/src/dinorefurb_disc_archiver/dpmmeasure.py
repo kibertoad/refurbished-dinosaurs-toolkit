@@ -1,4 +1,4 @@
-"""Measuring DPM in a drive by timing single-sector reads. See ADR 0050.
+"""Measuring DPM in a drive by timing single-sector reads. See ADR 0051.
 
 The angle between two sectors is the time between the completions of two back-to-back reads of
 them, divided by the rotation period, modulo one turn. The disc keeps turning while the drive
@@ -56,6 +56,9 @@ REMEASURE_READS = 3
 CALIBRATION_AGREEMENT = 0.02
 CALIBRATION_ATTEMPTS = 3
 SPIN_UP_READS = 8
+# A drive that reads further than this share from the requested speed ignored SET CD SPEED or
+# picked the nearest speed it offers; the measurement warns.
+SPEED_TOLERANCE = 0.25
 
 
 class Drive(Protocol):
@@ -191,6 +194,10 @@ class _Measurement:
         # the reads reached the disc. A read faster than half of that came from the cache. 0
         # until the first calibration.
         self.cache_floor = 0.0
+
+    def calibration_details(self) -> list[dict[str, int]]:
+        """Each calibration as the measurement file keeps it."""
+        return [{"lba": c.lba, "periodNs": round(c.period), "sectorTimeNs": round(c.sector_time)} for c in self.calibrations]
 
     # Reads
 
@@ -452,6 +459,12 @@ class _Measurement:
         tenth = max(1, bins // 10)
         if self.end - self.first >= 20_000 and _median(per_turn[:tenth]) >= _median(per_turn[-tenth:]):
             warnings.append("the sectors per turn do not grow from the inside of the disc outwards, as a CD's do")
+        speed = _median([1e9 / (75 * c.sector_time) for c in self.calibrations])
+        if abs(speed - settings.speed) > SPEED_TOLERANCE * settings.speed:
+            warnings.append(
+                f"the drive read at {speed:.1f}x, not the {settings.speed}x asked for: it ignored SET CD SPEED or "
+                "does not offer that speed"
+            )
         # The bins run from the end of one point to the end of the next. Each entry is moved back
         # by one sector at its own density, and the start by one at the first bin's.
         angles = []
@@ -463,9 +476,8 @@ class _Measurement:
             raise _Refused("the measured angles do not grow from one step to the next")
         dpm = Dpm(self.first, settings.resolution, tuple(angles))
         periods = [c.period / 1e6 for c in self.calibrations]
-        speeds = [1e9 / (75 * c.sector_time) for c in self.calibrations]
         stats: dict[str, object] = {
-            "measuredSpeed": round(_median(speeds), 2),
+            "measuredSpeed": round(speed, 2),
             "rotationPeriodMs": {"min": round(min(periods), 3), "max": round(max(periods), 3)},
             "sectorsPerTurn": {
                 "first": round(_median(per_turn[:tenth]), 2),
@@ -488,9 +500,7 @@ class _Measurement:
             "calibrationAttempts": self.calibration_attempts,
         }
         details: dict[str, object] = {
-            "calibrations": [
-                {"lba": c.lba, "periodNs": round(c.period), "sectorTimeNs": round(c.sector_time)} for c in self.calibrations
-            ],
+            "calibrations": self.calibration_details(),
             "points": points,
             "passes": [[None if v is None else round(v, 5) for v in p] for p in passes],
             "steps": [{"turns": round(v, 5), "status": s} for v, s in zip(final, status, strict=True)],
@@ -531,12 +541,7 @@ def measure(drive: Drive, clock: Clock, first: int, end: int, settings: Settings
                 },
                 "warnings": [],
             },
-            {
-                "calibrations": [
-                    {"lba": c.lba, "periodNs": round(c.period), "sectorTimeNs": round(c.sector_time)}
-                    for c in measurement.calibrations
-                ]
-            },
+            {"calibrations": measurement.calibration_details()},
         )
     for warning in warnings:
         log(f"DPM: warning: {warning}")

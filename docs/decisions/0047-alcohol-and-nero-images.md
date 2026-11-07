@@ -2,7 +2,7 @@
 
 Status: accepted. Supersedes the consequence of [ADR 0004](0004-personal-disc-archiving.md) that
 Alcohol MDS/MDF and Nero NRG are not produced, and extends its decision 3 to both. Part of issue
-514. [ADR 0050](0050-dpm-measurement.md) adds the DPM block to the MDS reader and writer.
+514. [ADR 0051](0051-dpm-measurement.md) adds the DPM block to the MDS reader and writer.
 
 ## Context
 

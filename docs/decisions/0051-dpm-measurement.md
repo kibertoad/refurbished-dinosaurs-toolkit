@@ -1,4 +1,4 @@
-# ADR 0050: the disc archiver measures DPM itself
+# ADR 0051: the disc archiver measures DPM itself
 
 Status: accepted. Extends decision 2 of [ADR 0004](0004-personal-disc-archiving.md) (the archiver
 reads no sectors itself) with one exception, and the `mds` writer of
@@ -10,8 +10,7 @@ been run on a real drive yet; that validation is part of the issue's exit condit
 Some copy protections time reads to check where sectors physically lie on the pressed disc:
 SecuROM 4.8 and later ("SecuROM NEW", up to 7.x on CD), StarForce 1 to 3, VOB ProtectCD V5 and
 CD-Cops. A copy that holds every sector still fails them, because a CD-R, an emulated drive or a
-model of a uniform disc puts the sectors elsewhere. rust-dos found this in Grom (2002, SecuROM
-4.84): about 360 timed reads in four areas, compared with a 72-bit pattern of the pressing.
+model of a uniform disc puts the sectors elsewhere.
 
 Alcohol 120% and BlindWrite measure the positions (Data Position Measurement, DPM) and store the
 angle of every `resolution`-th sector. CDEmu delays reads by those angles, so the protected disc

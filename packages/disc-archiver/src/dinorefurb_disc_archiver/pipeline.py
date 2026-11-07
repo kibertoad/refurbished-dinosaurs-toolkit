@@ -39,7 +39,7 @@ from .disc import (
     describe_ranges,
     session_gap,
 )
-from .dpm import read_sidecar, sidecar_path, trigger, write_sidecar
+from .dpm import Dpm, read_sidecar, read_sidecar_record, sidecar_path, trigger, write_sidecar
 from .dpmmeasure import Clock, DpmUnavailable
 from .formats import (
     FORMATS,
@@ -480,10 +480,12 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
     """Read a written format back and compare what it holds with the source's fingerprint."""
     result = Verification()
     kind = output.format
+    copied_dpm: Dpm | None = None
     if kind in ("bincue-split", "bincue", "ccd", "chd", "mds", "nrg", "iso-wav"):
         with open_source(output.entry, work, log) as copy:
             found = fingerprint(copy)
             copied = Metadata.of(copy)
+            copied_dpm = copy.dpm
         if kind == "iso-wav" and any(t["mode"] == "MODE2" for t in reference["tracks"]):
             # The cue sheet types the ISO as MODE1/2048: it holds the user data, not the sector mode.
             found["tracks"] = [
@@ -546,9 +548,8 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
     if disc.dpm is not None:
         if kind == "mds":
             result.compared.append("DPM data")
-            with open_source(output.entry, work, log) as copy:
-                if copy.dpm != disc.dpm:
-                    result.differences.append("the DPM data differs from the source")
+            if copied_dpm != disc.dpm:
+                result.differences.append("the DPM data differs from the source")
         else:
             result.not_compared.append(f"the DPM data, which {format_by_id(kind).holder or f'the {kind} format'} does not hold")
     return result
@@ -999,8 +1000,6 @@ def archive(
         log(f"Copying the disc in {drive} with {chosen.title}")
         ripped = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
         dump = ripped.path
-        # A measurement left by an earlier copy into this folder is not this disc's.
-        sidecar_path(dump).unlink(missing_ok=True)
         corrected: bool | None = None
         applied = read_offset
         configuration: dict[str, object] | None = None
@@ -1033,6 +1032,10 @@ def archive(
                 "cdrdao does not correct the drive's read offset: the audio is uncorrected, and its hashes differ from a "
                 "corrected dump's by the drive's offset. Give --read-offset with the drive's offset to correct it."
             )
+        # A measurement left by an earlier copy into these folders is not this disc's, and a cue
+        # sheet opened below, or converted later, would take it.
+        for stale in {sidecar_path(ripped.path), sidecar_path(dump)}:
+            stale.unlink(missing_ok=True)
         source: dict[str, object] = {
             "kind": "drive",
             "drive": drive,
@@ -1060,17 +1063,33 @@ def archive(
             "dpm": None,
         }
     with open_source(dump, output, log) as disc:
-        if drive is not None:
-            source["dpm"] = measure_dpm(drive, disc, dump, output, dpm, settings, source["discAnalysis"], log)  # type: ignore[arg-type]
-        else:
-            source["dpm"] = None if disc.dpm is None else {
-                "status": "fromSource",
-                "startSector": disc.dpm.start,
-                "resolution": disc.dpm.resolution,
-                "entries": len(disc.dpm.angles),
-            }
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(resolve_formats(formats if formats is not None else [RECOMMENDED], profile, disc.layout, raw))
+        if drive is not None:
+            source["dpm"] = measure_dpm(drive, disc, dump, output, dpm, settings, source["discAnalysis"], log)  # type: ignore[arg-type]
+            if disc.dpm is not None and "mds" not in wanted:
+                log(
+                    "DPM: no mds copy was asked for, and no other format holds DPM data. Convert "
+                    f"{source['dump']} with --format mds to make a copy that holds it."
+                )
+        else:
+            sidecar = sidecar_path(dump)
+            measurement = read_sidecar_record(sidecar) if dump.suffix.lower() == ".cue" and sidecar.is_file() else None
+            if disc.dpm is not None:
+                source["dpm"] = {
+                    "status": "fromSource",
+                    "startSector": disc.dpm.start,
+                    "resolution": disc.dpm.resolution,
+                    "entries": len(disc.dpm.angles),
+                }
+                if measurement is not None:
+                    source["dpm"]["measurement"] = measurement  # type: ignore[index]
+            elif measurement is not None:
+                source["dpm"] = {"status": "notInSource", "measurement": measurement}
+                log(
+                    f"DPM: {sidecar.name} records a measurement that is {measurement.get('status')} and "
+                    "holds no DPM data, so the copies lack the data the protection checks."
+                )
         return derive(disc, output, name, wanted, profile, log, source, unread, loaded)
 
 
@@ -1134,7 +1153,7 @@ def measure_dpm(
     write_sidecar(path, result.dpm, record, result.details)
     if result.dpm is not None:
         disc.dpm = result.dpm
-        log(f"DPM: measured {len(result.dpm.angles)} steps; the mds copy holds them and {path.name} keeps the measurement.")
+        log(f"DPM: measured {len(result.dpm.angles)} steps; {path.name} keeps the measurement.")
     else:
         log(f"DPM: the measurement was refused, so no copy holds DPM data; {path.name} keeps what was measured.")
     return record
