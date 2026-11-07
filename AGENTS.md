@@ -39,8 +39,9 @@ This repository publishes the shared tooling that clean-room game restorations c
   Every copy path in `packages/disc-archiver/` shows the notice and refuses to run until it is
   accepted, and every output folder carries it. The archiver gets no upload or sharing feature,
   and its only use of the network is downloading the redumper release pinned in `redumper.json`.
-  Reading a disc stays with established dumpers (redumper, cdrdao); a format that
-  cannot hold something, or a comparison not made, is reported as such.
+  Reading a disc stays with established dumpers (redumper, cdrdao), apart from the timed reads
+  of the DPM measurement ([ADR 0051](docs/decisions/0051-dpm-measurement.md)), whose data is
+  discarded; a format that cannot hold something, or a comparison not made, is reported as such.
 - The reader and engine agree on `PREPARED_PROTOCOL` (`packages/executable-reader/src/report.ts`
   and `scientific_method_engine/__init__.py`). A change to the shape of a prepared config increments
   both in the same PR and releases both packages.

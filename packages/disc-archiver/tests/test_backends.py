@@ -17,6 +17,7 @@ from synthetic import REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, 
 
 from dinorefurb_disc_archiver import backends, cli, dataerrors, pipeline, redumper
 from dinorefurb_disc_archiver.disc import DiscError
+from dinorefurb_disc_archiver.dpmmeasure import DpmUnavailable
 from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.notice import NOTICE_FILENAME
 from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive, fingerprint, manifest_ok
@@ -189,6 +190,7 @@ class ProgramBackendTests(unittest.TestCase):
                     "protectionSchemes": None,
                     "warnings": [],
                 },
+                "dpm": None,
             },
         )
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue"])  # type: ignore[union-attr]
@@ -197,10 +199,22 @@ class ProgramBackendTests(unittest.TestCase):
     def test_protection_signs_in_redumpers_log_are_recorded_and_printed(self) -> None:
         printed = io.StringIO()
         arguments = ["rip", "--drive", "E:", "--backend", "redumper", "--output", str(self.dir / "out"), "--name", "Game", "--accept-personal-use"]
-        with mock.patch.dict(os.environ, {"STAND_IN_ANALYSIS": "1"}), redirect_stdout(io.StringIO()), redirect_stderr(printed):
+        def no_drive_layer(drive: str) -> None:
+            raise DpmUnavailable("no drive layer in tests")
+
+        with (
+            mock.patch.dict(os.environ, {"STAND_IN_ANALYSIS": "1"}),
+            mock.patch.object(pipeline, "open_dpm_drive", no_drive_layer),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(printed),
+        ):
             code = cli.main(arguments)
         self.assertEqual(code, cli.EXIT_OK, printed.getvalue())
-        analysis = json.loads((self.dir / "out" / MANIFEST_NAME).read_text())["source"]["discAnalysis"]
+        source = json.loads((self.dir / "out" / MANIFEST_NAME).read_text())["source"]
+        # The unknown SecuROM scheme calls for a DPM measurement, which cannot run here.
+        self.assertEqual(source["dpm"]["status"], "unavailable")
+        self.assertIn("unknown scheme", source["dpm"]["trigger"])
+        analysis = source["discAnalysis"]
         self.assertEqual(analysis["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown"}])
         self.assertEqual([s["offset"] for s in analysis["offsetShifts"]], [-572, 16, -572])
         self.assertIn(

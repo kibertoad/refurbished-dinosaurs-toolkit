@@ -11,9 +11,11 @@ from pathlib import Path
 
 from . import backends, drives, redump, redumper, tools
 from .disc import DiscError
+from .dpmmeasure import Settings
 from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
 from .pipeline import (
+    DPM_MODES,
     archive,
     check_against_manifest,
     fingerprint,
@@ -115,6 +117,19 @@ def _parser() -> argparse.ArgumentParser:
         help="the drive's read offset, as AccurateRip lists it; corrects the audio of a cdrdao dump "
         "(--backend cdrdao only: redumper corrects the offset itself)",
     )
+    rip.add_argument(
+        "--dpm",
+        choices=DPM_MODES,
+        default="auto",
+        help="time reads to measure where the sectors lie on the disc (DPM), for protections that check it: "
+        "auto (when redumper finds SecuROM 4.8 or later), always (for StarForce, ProtectCD or CD-Cops, which "
+        "redumper does not detect) or never. Windows only",
+    )
+    rip.add_argument("--dpm-speed", type=int, default=Settings.speed, metavar="X", help="read speed of the DPM measurement, 1 to 16 (default 4)")
+    rip.add_argument(
+        "--dpm-resolution", type=int, default=Settings.resolution, metavar="SECTORS", help="sectors between DPM entries (default 50)"
+    )
+    rip.add_argument("--dpm-passes", type=int, default=Settings.passes, metavar="N", help="passes over the disc, compared for the jitter (default 2)")
     common(rip)
 
     convert = commands.add_parser("convert", help="write the chosen formats from a copy you already have")
@@ -134,6 +149,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     dat_option(check, "the cue sheet and its track files")
     return parser
+
+
+def _dpm_options(arguments: argparse.Namespace) -> dict[str, object]:
+    """The DPM measurement's arguments of ``archive`` for a rip; none for convert."""
+    if arguments.command != "rip":
+        return {}
+    settings = Settings(speed=arguments.dpm_speed, resolution=arguments.dpm_resolution, passes=arguments.dpm_passes)
+    return {"dpm": arguments.dpm, "dpm_settings": settings}
 
 
 def _formats(requested: list[str] | None) -> list[str] | None:
@@ -302,6 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_download=not getattr(arguments, "no_download", False),
             read_offset=getattr(arguments, "read_offset", None),
             dat=arguments.dat,
+            **_dpm_options(arguments),
         )
         return _report(manifest)
     except DiscError as error:
