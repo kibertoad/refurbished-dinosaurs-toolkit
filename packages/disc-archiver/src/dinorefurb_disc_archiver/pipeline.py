@@ -1117,7 +1117,7 @@ def archive(
 DPM_MODES = ("auto", "always", "never")
 
 
-def open_dpm_drive(drive: str) -> tuple[dpmmeasure.Drive, Clock]:
+def open_dpm_drive(drive: str) -> tuple[dpmmeasure.CheckedDrive, Clock]:
     """The drive the DPM measurement times, and the clock it is timed with (see ``scsi``)."""
     from . import scsi
 
@@ -1201,7 +1201,7 @@ class DifferentDisc(DiscError):
 
 # Sectors of the first data track the same-disc check compares, spread from its start to its end,
 # besides the ISO 9660 primary volume descriptor at 16. A sector the dump or the drive could not
-# read is left out; at least SAME_DISC_MINIMUM have to be compared.
+# read is left out; at least SAME_DISC_MINIMUM that hold more than zeros have to be compared.
 SAME_DISC_SECTORS = 24
 SAME_DISC_MINIMUM = 8
 ISO_PVD_SECTOR = 16
@@ -1213,8 +1213,14 @@ def check_same_disc(handle: dpmmeasure.CheckedDrive, disc: Disc, log: Log) -> di
 
     The drive's table of contents has to give each track's number, kind (data or audio) and
     INDEX 01 address as the dump has them, and its lead-out where the dump's last track ends.
-    Then the user data of the primary volume descriptor and of sectors spread over the first data
-    track has to equal the dump's. A sector either side could not read is left out.
+    Where the dump only assumed a session's gap (``assumed`` in ``Disc.gaps``), the session's
+    addresses and any lead-out after them are compared from the drive's address of the session's
+    first track instead, which has to leave a gap at least the standard one; the record lists the
+    gap the drive gave. Then the user data of the primary volume descriptor and of sectors spread
+    over the first data track has to equal the dump's. A sector either side could not read is
+    left out, as is a raw sector the dump kept with a data error (one whose recorded EDC fails).
+    Sectors of zeros match on any disc, so at least ``SAME_DISC_MINIMUM`` of the matching sectors
+    have to hold something else.
 
     Returns what was compared, for the measurement's record.
 
@@ -1229,17 +1235,18 @@ def check_same_disc(handle: dpmmeasure.CheckedDrive, disc: Disc, log: Log) -> di
     tracks = [e for e in toc if e.number != dpmmeasure.LEAD_OUT]
     lead_out = next((e.lba for e in toc if e.number == dpmmeasure.LEAD_OUT), None)
     found = [(e.number, "data" if e.data else "audio", e.lba) for e in tracks]
-    wanted = [(t.number, "audio" if t.is_audio else "data", t.index1) for t in disc.tracks]
+    wanted, wanted_lead_out, assumed = _expected_toc(disc, {e.number: e.lba for e in tracks})
     if found != wanted:
         differences.append(f"the drive's tracks are {_describe_toc(found)}; the dump's are {_describe_toc(wanted)}")
-    if lead_out != disc.total_sectors:
-        differences.append(f"the drive's lead-out starts at sector {lead_out}, the dump's at {disc.total_sectors}")
+    if lead_out != wanted_lead_out:
+        differences.append(f"the drive's lead-out starts at sector {lead_out}, the dump's at {wanted_lead_out}")
     if differences:
         raise DifferentDisc("the disc in the drive is not the dumped disc: " + "; ".join(differences))
     track = disc.first_data_track()
     last = track.length - 1
     picks = sorted({ISO_PVD_SECTOR, *(i * last // (SAME_DISC_SECTORS - 1) for i in range(SAME_DISC_SECTORS))})
     compared = 0
+    blank = 0
     unread: list[int] = []
     for index in picks:
         if index > last:
@@ -1247,24 +1254,74 @@ def check_same_disc(handle: dpmmeasure.CheckedDrive, disc: Disc, log: Log) -> di
         lba = track.index1 + index
         try:
             expected = track.user_data_at(index)
+            if track.storage != "cooked" and _fails_edc(next(track.iter_raw(index, index + 1))):
+                raise NotDataSector(f"sector {lba} fails its EDC in the dump")
             got = handle.read_data(lba)
         except (NotDataSector, dpmmeasure.DriveError):
             unread.append(lba)
             continue
         if got != expected:
             differences.append(f"sector {lba}")
+        elif not any(expected):
+            blank += 1
         compared += 1
     if differences:
         raise DifferentDisc(
             f"the disc in the drive is not the dumped disc: the user data of {', '.join(differences)} differs from the dump's"
         )
-    if compared < SAME_DISC_MINIMUM:
+    if compared - blank < SAME_DISC_MINIMUM:
         raise DiscError(
-            f"only {compared} sectors could be read both in the drive and in the dump, too few to tell whether the disc "
-            f"in the drive is the dumped disc (sectors not read: {', '.join(map(str, unread))})"
+            f"only {compared - blank} sectors that hold more than zeros could be read both in the drive and in the dump, "
+            f"too few to tell whether the disc in the drive is the dumped disc ({blank} sectors of zeros also matched; "
+            f"sectors not read: {', '.join(map(str, unread)) or 'none'})"
+        )
+    for gap in assumed:
+        log(
+            f"DPM: the dump assumed the standard gap of {gap['dump']} sectors before session {gap['session']}; "
+            f"the drive's table of contents gives {gap['drive']}, and the session was compared from there."
         )
     log(f"DPM: the disc in the drive is the dumped disc: its table of contents and {compared} sectors match the dump.")
-    return {"tracks": len(tracks), "leadOut": lead_out, "sectorsCompared": compared, "sectorsNotRead": unread}
+    return {
+        "tracks": len(tracks),
+        "leadOut": lead_out,
+        "assumedGaps": assumed,
+        "sectorsCompared": compared,
+        "sectorsBlank": blank,
+        "sectorsNotRead": unread,
+    }
+
+
+def _expected_toc(disc: Disc, drive_lbas: Mapping[int, int]) -> tuple[list[tuple[int, str, int]], int, list[dict[str, int]]]:
+    """The tracks (number, kind, INDEX 01 address) and lead-out the drive should give for ``disc``.
+
+    A session whose gap the dump only assumed is placed where the drive puts its first track,
+    when that leaves at least the standard gap, and so are the session's other tracks and a
+    lead-out after it. Returns the tracks, the lead-out and, for each such session, the gap the
+    dump assumed and the one the drive gave.
+    """
+    wanted = []
+    assumed: list[dict[str, int]] = []
+    shift = 0
+    previous_session = 1
+    for track in disc.tracks:
+        if track.session != previous_session:
+            gap = disc.gaps[track.session]
+            shift = 0
+            drive_lba = drive_lbas.get(track.number)
+            if gap.source == "assumed" and drive_lba is not None and drive_lba >= track.index1:
+                shift = drive_lba - track.index1
+                assumed.append({"session": track.session, "dump": gap.sectors, "drive": gap.sectors + shift})
+            previous_session = track.session
+        wanted.append((track.number, "audio" if track.is_audio else "data", track.index1 + shift))
+    return wanted, disc.total_sectors + shift, assumed
+
+
+def _fails_edc(sector: bytes) -> bool:
+    """Whether a raw MODE1 or MODE2 form 1 data sector records an EDC its data does not match, as a
+    sector a dump kept with a data error does. A sector that records none (zero, as in a raw image
+    made from user data) is not judged."""
+    stored = sector[2064:2068] if sector[15] == 1 else sector[2072:2076]
+    return any(stored) and not dataerrors.edc_valid(sector)
 
 
 def _describe_toc(tracks: list[tuple[int, str, int]]) -> str:
@@ -1298,7 +1355,7 @@ def measure_dpm_separately(
     track = disc.first_data_track()
     handle, clock = open_dpm_drive(drive)
     try:
-        check = check_same_disc(handle, disc, log)  # type: ignore[arg-type]
+        check = check_same_disc(handle, disc, log)
         result = _time_reads(handle, clock, track, SEPARATE_TRIGGER, settings, log)
     finally:
         _close(handle)
@@ -1308,8 +1365,22 @@ def measure_dpm_separately(
         "file": path.name,
         "separate": {"archiver": package_version(), "sameDisc": check},
     }
+    if result.dpm is None and _holds_accepted_measurement(path):
+        record["file"] = None
+        log(
+            f"DPM: the measurement was refused, so {path.name} keeps the accepted measurement it already held; "
+            "--replace replaces one only with an accepted measurement."
+        )
+        return record
     _keep_measurement(path, result, record, log)
     return record
+
+
+def _holds_accepted_measurement(path: Path) -> bool:
+    try:
+        return path.is_file() and read_sidecar(path) is not None
+    except DiscError:
+        return False
 
 
 def _log_disc_analysis(log: Log, analysis: dict[str, object] | None) -> None:

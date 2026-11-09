@@ -9,16 +9,17 @@ import struct
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from fakedrive import FakeDisc, FakeDrive
-from synthetic import SyntheticDisc, iso_image, redumper_analysis_steps, redumper_log
+from synthetic import SyntheticDisc, edc_sector, iso_image, redumper_analysis_steps, redumper_log
 from test_mds_nrg import mds_descriptor
 
 from dinorefurb_disc_archiver import backends, cli, dpm, dpmmeasure, pipeline, scsi
 from dinorefurb_disc_archiver.cue import read_cue
-from dinorefurb_disc_archiver.disc import RAW_SECTOR, Disc, DiscError, Track
+from dinorefurb_disc_archiver.disc import RAW_SECTOR, Disc, DiscError, SessionGap, Track
 from dinorefurb_disc_archiver.dpm import Dpm
 from dinorefurb_disc_archiver.dpmmeasure import DpmUnavailable, Settings, TocEntry, measure
 from dinorefurb_disc_archiver.pipeline import derive, open_source
@@ -521,7 +522,6 @@ class ArchiveTests(unittest.TestCase):
             self.assertIsNone(copy.dpm)
 
 
-
 class SeparateMeasurementTests(unittest.TestCase):
     """``disc-archiver dpm``: a dump made before is measured in a drive after the disc in it is
     checked against the dump, and ``convert`` takes the measurement from beside the cue sheet."""
@@ -622,6 +622,19 @@ class SeparateMeasurementTests(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_OK, err)
         self.assertEqual(json.loads(out)["separate"]["sameDisc"]["sectorsNotRead"], [0, 16])
 
+    def test_a_sector_the_dump_kept_with_a_data_error_is_left_out(self) -> None:
+        # Sector 16 of the dump records its EDC but holds damaged user data, as a redumper dump keeps
+        # a sector whose data errors remain; it is left out rather than taken as another disc.
+        track = self.archival / "Game (Track 1).bin"
+        raw = bytearray(track.read_bytes())
+        damaged = bytearray(edc_sector(16, self.iso[16 * 2048 : 17 * 2048]))
+        damaged[100] ^= 0xFF
+        raw[16 * RAW_SECTOR : 17 * RAW_SECTOR] = damaged
+        track.write_bytes(bytes(raw))
+        code, out, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_OK, err)
+        self.assertEqual(json.loads(out)["separate"]["sameDisc"]["sectorsNotRead"], [16])
+
     def test_too_few_readable_sectors_cannot_tell(self) -> None:
         self.drive = self.drive_for(self.disc, self.iso, failing=range(self.disc.tracks[0].end))
         with self.assertRaisesRegex(DiscError, "too few to tell"):
@@ -651,6 +664,61 @@ class SeparateMeasurementTests(unittest.TestCase):
         self.assertEqual(json.loads(out)["status"], "refused")
         self.assertIsNone(dpm.read_sidecar(self.archival / "Game.dpm.json"))
 
+    def test_a_refused_measurement_does_not_replace_an_accepted_one(self) -> None:
+        code, _, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_OK, err)
+        sidecar = self.archival / "Game.dpm.json"
+        accepted = sidecar.read_bytes()
+        measured = self.fake_measure
+
+        def refused(drive, clock, first, end, settings, log):  # type: ignore[no-untyped-def]
+            result = measured(drive, clock, first, end, settings, log)
+            return dpmmeasure.Result(None, {**result.record, "status": "refused", "reason": "test"}, {})
+
+        with mock.patch.object(self, "fake_measure", refused):
+            code, out, _ = self.run_command("--replace")
+        self.assertEqual(code, cli.EXIT_FAILED)
+        self.assertEqual((json.loads(out)["status"], json.loads(out)["file"]), ("refused", None))
+        self.assertEqual(sidecar.read_bytes(), accepted)
+
+    def test_sectors_of_zeros_do_not_count_toward_the_minimum(self) -> None:
+        # Every sector holding more than zeros fails in the drive, so only sectors of zeros match.
+        failing = [lba for lba in range(self.disc.tracks[0].end) if any(self.iso[lba * 2048 : (lba + 1) * 2048])]
+        self.drive = self.drive_for(self.disc, self.iso, failing=failing)
+        with self.assertRaisesRegex(DiscError, "hold more than zeros"):
+            pipeline.check_same_disc(self.drive, self.disc, silent_log)
+
+    def multisession(self) -> Disc:
+        """The dump with its audio track in a second session, whose gap the cue sheet does not give."""
+        data, music = self.disc.tracks
+        disc = Disc([replace(data), replace(music, session=2)])
+        self.assertEqual(disc.gaps[2].source, "assumed")
+        return disc
+
+    def toc_moved(self, disc: Disc, sectors: int) -> FakeDrive:
+        """A drive whose table of contents puts ``disc``'s second session ``sectors`` further on."""
+        toc = [TocEntry(t.number, not t.is_audio, t.index1 + (sectors if t.session == 2 else 0)) for t in disc.tracks]
+        toc.append(TocEntry(dpmmeasure.LEAD_OUT, False, disc.total_sectors + sectors))
+        return FakeDrive(FakeDisc(), toc=toc, data=lambda lba: self.iso[lba * 2048 : (lba + 1) * 2048])  # type: ignore[arg-type]
+
+    def test_a_session_gap_the_dump_assumed_is_taken_from_the_drive(self) -> None:
+        disc = self.multisession()
+        check = pipeline.check_same_disc(self.toc_moved(disc, 500), disc, silent_log)
+        gap = disc.gaps[2].sectors
+        self.assertEqual(check["assumedGaps"], [{"session": 2, "dump": gap, "drive": gap + 500}])
+        self.assertEqual(check["leadOut"], disc.total_sectors + 500)
+
+    def test_a_session_gap_shorter_than_the_standard_one_is_another_disc(self) -> None:
+        disc = self.multisession()
+        with self.assertRaisesRegex(pipeline.DifferentDisc, "lead-out"):
+            pipeline.check_same_disc(self.toc_moved(disc, -1), disc, silent_log)
+
+    def test_a_session_gap_the_dump_read_is_compared_exactly(self) -> None:
+        data, music = self.disc.tracks
+        disc = Disc([replace(data), replace(music, session=2)], gaps={2: SessionGap(11_400, "toc")})
+        with self.assertRaisesRegex(pipeline.DifferentDisc, "lead-out"):
+            pipeline.check_same_disc(self.toc_moved(disc, 500), disc, silent_log)
+
     def test_only_a_cue_sheet_is_taken(self) -> None:
         with self.assertRaisesRegex(DiscError, "not a cue sheet"):
             pipeline.measure_dpm_separately("E:", self.dir / "Game.iso", Settings(), silent_log)
@@ -670,6 +738,7 @@ class TocTests(unittest.TestCase):
         self.assertEqual(scsi.read10(0x01020304)[:6], bytes([0x28, 0x08, 1, 2, 3, 4]))
         self.assertEqual(scsi.read10(5, fua=False)[1], 0)
         self.assertEqual(scsi.read_toc()[:2] + scsi.read_toc()[7:9], bytes([0x43, 0]) + scsi.TOC_BYTES.to_bytes(2, "big"))
+
 
 if __name__ == "__main__":
     unittest.main()

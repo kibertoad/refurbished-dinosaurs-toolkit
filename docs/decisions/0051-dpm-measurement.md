@@ -58,7 +58,9 @@ established dumper the archiver runs can measure DPM.
    the drive to the dump any more, the command first compares the drive's table of contents
    (tracks, their kind and INDEX 01 address, the lead-out) and the user data of the primary
    volume descriptor and 24 sectors spread over the first data track with the dump's, and refuses
-   another disc. Its record says it was measured apart from the dump, with which archiver, and
+   another disc. A session gap the dump only assumed is taken from the drive's table of contents,
+   as long as it is at least the standard gap, and sectors of zeros do not count toward the
+   minimum of compared sectors. A refused measurement never replaces an accepted one. Its record says it was measured apart from the dump, with which archiver, and
    what that check compared.
 
 ## Consequences
