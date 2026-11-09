@@ -8,9 +8,10 @@ radius's distance from the start in track pitches, in turns.
 The drive turns the disc at constant linear velocity for the speed it was set to. A read takes a
 command overhead, waits for the sector's end to pass the head and reports after a latency, each
 with Gaussian jitter. Options make it answer from a cache despite Force Unit Access, fail reads,
-answer some reads a turn late, or take longer to reach a sector more than a few turns ahead, as a
-drive that jumps tracks to get there does. ``toc`` and ``data`` are the table of contents and the
-user data of each sector it gives the check that it holds the dumped disc.
+answer some reads a turn late, or take longer (or, with a negative ``jump_overhead``, less long) to
+reach a sector more than ``jump_turns`` ahead, as a drive whose turnaround depends on the distance
+does. ``toc`` and ``data`` are the table of contents and the user data of each sector it gives the
+check that it holds the dumped disc.
 """
 
 from __future__ import annotations

@@ -287,15 +287,10 @@ class _Measurement:
             return "the drops of the read times disagree on the rotation period"
         period = _median([sector_time - steps[i] for i in kept])
         per_turn = period / sector_time
-        # A drop comes at least a turn after the one before. It can come later: a drive that
-        # needs longer to reach a sector a few turns ahead (a track jump) answers the reads past
-        # that distance a turn late until the wait wraps again, and a late answer left out above
-        # skips a drop. Both add whole turns, which the fit below counts.
-        # The drop right after a read answered a turn late is its return, not a wrap.
-        wrapped = [i for i in kept if i == 0 or steps[i - 1] < period / 2]
-        spacing = [b - a for a, b in zip(wrapped, wrapped[1:], strict=False)]
-        if spacing and min(spacing) < per_turn - 1.5:
-            return f"two drops come {min(spacing)} sectors apart, sooner than the {per_turn:.1f} sectors a turn takes"
+        # Where the drops come is no check: a read completes when its sector passes the head, so
+        # a drive whose turnaround grows or shrinks with the distance to the sector answers some
+        # reads a whole turn later or sooner than its neighbours, which moves a drop by up to a
+        # turn either way. The fit below counts those whole turns and checks every read time.
         low, high = SECTORS_PER_TURN_RANGE
         if not low <= per_turn <= high:
             return f"the times give {per_turn:.1f} sectors per turn, outside a CD's {low:.0f} to {high:.0f}"
