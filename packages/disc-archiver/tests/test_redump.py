@@ -14,9 +14,10 @@ from xml.sax.saxutils import quoteattr
 
 from synthetic import SyntheticCdExtra, SyntheticDisc, iso_image
 
-from dinorefurb_disc_archiver import redump
+from dinorefurb_disc_archiver import dpm, redump
 from dinorefurb_disc_archiver.cli import EXIT_FAILED, EXIT_MISMATCH, EXIT_OK, main
 from dinorefurb_disc_archiver.disc import DiscError
+from dinorefurb_disc_archiver.dpm import Dpm
 from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, file_hashes
 
 DOCTYPE = '<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">'
@@ -84,6 +85,18 @@ class RedumpTests(unittest.TestCase):
         # bincue-split is written for the comparison even though only iso was asked for.
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue-split", "iso"])
         self.assertIn("redump: matched 'Synth Game' in redump.dat", out)
+
+    def test_the_descriptor_beside_a_split_copy_is_not_taken_for_a_track(self) -> None:
+        # A source with DPM data gets an .mds descriptor in its bincue-split copy, which Redump
+        # does not list.
+        dpm.write_sidecar(dpm.sidecar_path(self.sheet), Dpm(0, 10, (128, 384, 700)), {"status": "measured"}, {})
+        code, out, manifest = self.convert(self.reference_dat(), "--name", "Synth Game")
+        self.assertEqual(code, EXIT_OK, out)
+        split = next(o for o in manifest["outputs"] if o["format"] == "bincue-split")
+        self.assertIn("bincue-split/Synth Game.mds", [f["path"] for f in split["files"]])
+        report = manifest["redump"]
+        self.assertEqual(report["status"], "matched")
+        self.assertEqual([f["kind"] for f in report["files"]], ["cueSheet", "track", "track", "track"])
 
     def test_a_zipped_dat_as_redump_serves_it_is_read(self) -> None:
         archive = self.dir / "redump.zip"

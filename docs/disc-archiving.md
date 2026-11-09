@@ -121,7 +121,7 @@ checked, and the same on every machine it is kept on.
    | Keep | Why |
    |---|---|
    | `archival/` (redumper's `.scram`, `.subcode`, `.toc`, `.log` and the split dump) | The master. It holds the lead-in, lead-out, subchannel and protection data no other format keeps, and the split dump can be rebuilt from it. Compress it with 7-Zip or zstd for storage. |
-   | `archival/<name>.dpm.json`, `mds/` | For a disc whose protection times reads (SecuROM 4.8 and later, StarForce), the DPM measurement and the only copy that holds it. See [Data positions (DPM)](../packages/disc-archiver/README.md#data-positions-dpm). |
+   | `archival/<name>.dpm.json`, `bincue-split/<name>.mds` | For a disc whose protection times reads (SecuROM 4.8 and later, StarForce), the DPM measurement, and the descriptor that opens the split copy with it in rust-dos or CDEmu. See [Data positions (DPM)](../packages/disc-archiver/README.md#data-positions-dpm). |
    | `bincue-split/` | The Redump layout, the form disc databases list and most tools read. |
    | `rip-manifest.json` | The content hashes every other copy is checked against. |
 
@@ -189,7 +189,7 @@ closed.
 | Format | Data sectors | Audio | Pregaps | Subchannel | Sessions |
 |---|---|---|---|---|---|
 | redumper dump (`archival/`) | raw | yes | yes | read from the disc | yes |
-| `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines; a gap longer than the standard one only through the sector headers of a data track that opens the session |
+| `bincue-split`, `bincue` | raw | yes | yes | none; `bincue-split` adds an `.mds` descriptor holding the DPM data when the source has it | `REM SESSION` lines; a gap longer than the standard one only through the sector headers of a data track that opens the session |
 | `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289, with the standard gaps |
 | `ccd` | raw | yes | yes | generated from the table of contents | yes, with each gap |
 | `mds` | raw | yes | yes | none, but the DPM data when the source has it | one session only |

@@ -57,9 +57,13 @@ established dumper the archiver runs can measure DPM.
    protections redumper does not detect; `never` skips it and records that a trigger was skipped. The copy goes on whatever the
    measurement's outcome.
 5. Storage: the measurement and its details in `archival/<name>.dpm.json` beside the dump, the
-   manifest's `source.dpm`, and an Alcohol 120% DPM block in the `mds` output. A cue sheet with a
+   manifest's `source.dpm`, and an Alcohol 120% DPM block in the `mds` output and in a
+   descriptor `bincue-split` writes beside its cue sheet. That descriptor names the split copy's
+   own `.bin` files, one per track, so the reference copy carries the DPM data in a form rust-dos
+   and CDEmu open, for about 24 KB and no second copy of the sectors. A cue sheet with a
    `.dpm.json` beside it and an MDS image with a DPM table carry it into every conversion; other
-   formats list it as not held.
+   formats list it as not held. The `.dpm.json` stays the raw record, with every calibration and
+   step, which no image format holds.
 6. Drive access is Windows' SCSI pass-through only (`scsi.py`). The archiver has no portable drive
    layer, so elsewhere the measurement is recorded as unavailable.
 7. `disc-archiver dpm` measures a disc dumped before, in any drive, and writes the `.dpm.json`

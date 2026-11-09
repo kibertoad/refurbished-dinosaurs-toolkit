@@ -33,17 +33,20 @@ track's start sector counts from.
 1. The archiver reads and writes both formats itself, in pure Python, from the layouts above. No
    other program is involved.
 2. Reading (`convert` and `check`, `.mds` and `.nrg`):
-   - MDS: version 1 descriptors (`MEDIA DESCRIPTOR` 1.x) of a CD, with one session and one
-     `.mdf` named `*.mdf` or by a path inside the descriptor's directory. Tracks of 2,352-byte
-     sectors, or 2,448-byte sectors with 96 bytes of interleaved subchannel, which reads skip.
+   - MDS: version 1 descriptors (`MEDIA DESCRIPTOR` 1.x) of a CD, with one session, each track
+     in one file named `*.mdf` or by a path inside the descriptor's directory. Alcohol names one
+     `.mdf` for every track; a descriptor may name a file per track, as the one written beside
+     `bincue-split` does. Tracks of 2,352-byte sectors, or 2,448-byte sectors with 96 bytes of
+     interleaved subchannel, which reads skip.
    - NRG: version 2 (`NER5`) and version 1 (`NERO`) images of a CD with one session.
      Disc-at-once images (`DAOX`/`DAOI` with `CUEX`/`CUES`) and track-at-once images
      (`ETN2`/`ETNF`, a 150-sector pregap before each later track), in raw 2,352-byte sectors,
      2,448 with subchannel, or MODE1 2,048-byte user data. `CDTX`, `DINF` and `TOCT` blocks are
      skipped; `SINF` and `MTYP` are checked against the tracks.
    - Where the references disagree, the reader uses the reading that agrees with the rest of the
-     descriptor: an MDS pregap is stored when the `.mdf` bytes before the track's INDEX 01 are
-     exactly its sectors and not stored when there are none; a version 1 time is tried as binary
+     descriptor: an MDS pregap is stored when the bytes of its file before the track's INDEX 01
+     (after the previous track's sectors, when that track is in the same file) are exactly its
+     sectors and not stored when there are none; a version 1 time is tried as binary
      and as BCD, and only the reading whose layout matches the disc-at-once offsets is used. A
      descriptor that fits neither reading is refused.
    - Everything else is refused with the reason, never guessed: other descriptor versions (MDS

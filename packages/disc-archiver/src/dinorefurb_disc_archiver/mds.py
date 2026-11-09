@@ -2,15 +2,20 @@
 
 The layout follows libmirage's MDS parser (``images/image-mds`` in cdemu) and Aaru's Alcohol 120%
 image (``Aaru.Images/Alcohol120``); see ADR 0047. Only version 1 descriptors of CDs with one
-session and one ``.mdf`` file are read, with 2,352-byte sectors or 2,448-byte sectors that carry
-96 bytes of interleaved subchannel. Anything else is refused with the reason.
+session are read, with 2,352-byte sectors or 2,448-byte sectors that carry 96 bytes of interleaved
+subchannel. Anything else is refused with the reason.
 
-A track block gives the LBA and the ``.mdf`` offset of the track's INDEX 01, and its extra block
-the pregap and length in sectors. The references disagree on whether a pregap is stored in the
-``.mdf``, so the reader decides from the offsets: the pregap is stored when the bytes between the
-previous track's sectors and this track's INDEX 01 are exactly the pregap's sectors, and is not
-stored when there are none. A layout that is neither is refused. Track 1's pregap is the 150
-sectors before LBA 0, which the ``.mdf`` does not store.
+Each track block names the file holding the track: Alcohol writes ``*.mdf`` for every track, the
+descriptor's own name with that extension, and a descriptor may instead name a file per track, as
+the one the archiver writes beside a ``bincue-split`` copy does (see :func:`write_descriptor`).
+libmirage, Aaru and rust-dos read a name per track.
+
+A track block gives the LBA and the file offset of the track's INDEX 01, and its extra block the
+pregap and length in sectors. The references disagree on whether a pregap is stored, so the reader
+decides from the offsets: the pregap is stored when the bytes between the previous track's sectors
+in the same file (or the file's start) and this track's INDEX 01 are exactly the pregap's sectors,
+and is not stored when there are none. A layout that is neither is refused. Track 1's pregap is the
+150 sectors before LBA 0, which the file does not store.
 
 Header offset 84 gives the table of DPM data (see :mod:`.dpm`). The reader keeps the first DPM
 block, as libmirage and Aaru do, and the writer writes one when the disc carries DPM data.
@@ -46,7 +51,7 @@ MODES = {
 WRITTEN_MODES = {"AUDIO": 0xA9, "MODE1": 0xAA, "MODE2": 0xEC}
 CD_MEDIA = {0x00: "CD-ROM", 0x01: "CD-R", 0x02: "CD-RW"}
 # Alcohol stores no file name, only a wildcard for the descriptor's own name with this extension.
-MDF_NAME = "*.mdf".encode("utf-16-le") + b"\x00\x00"
+MDF_NAME = "*.mdf"
 
 
 @dataclass
@@ -157,7 +162,7 @@ def read_mds(path: Path) -> Disc:
                 "interleaved subchannel, are read"
             )
         if files != 1:
-            raise DiscError(f"{path.name}: track {point} is stored in {files} files; only one .mdf file is read")
+            raise DiscError(f"{path.name}: track {point} is stored in {files} files; only a track in one file is read")
         if not footer:
             raise DiscError(f"{path.name}: track {point} has no footer naming its image file")
         if not extra:
@@ -173,20 +178,21 @@ def read_mds(path: Path) -> Disc:
     numbers = [b.number for b in blocks]
     if numbers != list(range(1, len(blocks) + 1)) or (first, last) != (1, len(blocks)):
         raise DiscError(f"{path.name}: tracks {numbers} (first {first}, last {last}) are not numbered 1 onwards in order")
-    if len({b.file for b in blocks}) != 1:
-        raise DiscError(f"{path.name}: the tracks name different image files; only one .mdf file is read")
     if len({(b.sector_size, b.subchannel) for b in blocks}) != 1:
         raise DiscError(f"{path.name}: the tracks store sectors of different sizes, which the archiver does not read")
-    image = _image_file(path, blocks[0].file)
-    if not image.is_file():
-        raise DiscError(f"{image.name} does not exist next to {path.name}")
+    images: dict[str, Path] = {}
+    for block in blocks:
+        if block.file not in images:
+            image = _image_file(path, block.file)
+            if not image.is_file():
+                raise DiscError(f"{image.name} does not exist next to {path.name}")
+            images[block.file] = image
     positions = dpm.read_table(data, dpm_offset, path.name) if dpm_offset else None
-    return Disc(_tracks(path, image, blocks), origin=path, dpm=positions)
+    return Disc(_tracks(path, images, blocks), origin=path, dpm=positions)
 
 
-def _tracks(path: Path, image: Path, blocks: list[_Block]) -> list[Track]:
+def _tracks(path: Path, images: dict[str, Path], blocks: list[_Block]) -> list[Track]:
     stride = blocks[0].sector_size
-    image_size = image.stat().st_size
     if blocks[0].start != 0:
         raise DiscError(
             f"{path.name}: track 1 starts at LBA {blocks[0].start}; only discs whose first track starts at LBA 0 are read"
@@ -195,6 +201,9 @@ def _tracks(path: Path, image: Path, blocks: list[_Block]) -> list[Track]:
         raise DiscError(f"{path.name}: track 1 has a {blocks[0].pregap}-sector pregap; at most the 150 sectors before LBA 0 are read")
     lengths = [b.length for b in blocks]
     stored = [False] * len(blocks)
+    # Each file's last track so far and where its sectors end. A track in a file no earlier track
+    # used starts at the file's start (track 0 below), its pregap ahead of it or not.
+    ends: dict[str, tuple[int, int]] = {}
     for i in range(1, len(blocks)):
         previous, block = blocks[i - 1], blocks[i]
         if block.start == previous.start + previous.length + block.pregap:
@@ -209,23 +218,28 @@ def _tracks(path: Path, image: Path, blocks: list[_Block]) -> list[Track]:
             )
         if lengths[i - 1] <= 0:
             raise DiscError(f"{path.name}: track {previous.number} has no sectors before track {block.number}'s pregap")
-        previous_end = previous.offset + lengths[i - 1] * stride
+        ends[previous.file] = (previous.number, previous.offset + lengths[i - 1] * stride)
+        before, previous_end = ends.get(block.file, (0, 0))
         if block.offset == previous_end + block.pregap * stride:
             stored[i] = True
         elif block.pregap and block.offset == previous_end:
             stored[i] = False
         else:
+            follows = f"follows track {before}'s sectors" if before else "starts the file"
             raise DiscError(
-                f"{path.name}: track {block.number}'s sectors start at byte {block.offset} of {image.name}, which neither "
-                f"follows track {previous.number}'s sectors nor its own {block.pregap}-sector pregap stored after them"
+                f"{path.name}: track {block.number}'s sectors start at byte {block.offset} of {images[block.file].name}, which "
+                f"neither {follows} nor its own {block.pregap}-sector pregap stored ahead of it"
             )
     last = blocks[-1]
     if last.length <= 0:
         raise DiscError(f"{path.name}: track {last.number} has no sectors")
-    if last.offset + last.length * stride > image_size:
-        raise DiscError(f"track {last.number} runs past the end of {image.name}")
+    sizes = {file: image.stat().st_size for file, image in images.items()}
+    for i, block in enumerate(blocks):
+        if block.offset + lengths[i] * stride > sizes[block.file]:
+            raise DiscError(f"track {block.number} runs past the end of {images[block.file].name}")
     tracks = []
     for i, block in enumerate(blocks):
+        image = images[block.file]
         pregap = block.pregap if i else 0
         first = block.offset - (pregap * stride if stored[i] else 0)
         tracks.append(
@@ -263,21 +277,27 @@ def _block(mode: int, adr_ctl: int, point: int, pmsf: tuple[int, int, int], extr
     )
 
 
-def render_mds(disc: Disc, offsets: list[int]) -> bytes:
-    """The descriptor of a single-session image whose tracks' INDEX 01 sit at ``offsets`` of the ``.mdf``."""
+def render_mds(disc: Disc, offsets: list[int], files: list[str] | None = None) -> bytes:
+    """The descriptor of a single-session image whose tracks' INDEX 01 sit at ``offsets`` of their
+    files: each track's file in ``files``, or the ``.mdf`` named after the descriptor for all."""
     tracks = disc.tracks
+    names = files if files is not None else [MDF_NAME] * len(tracks)
+    distinct = list(dict.fromkeys(names))
+    encoded = [n.encode("utf-16-le") + b"\x00\x00" for n in distinct]
     count = 3 + len(tracks)
     session_at = HEADER_BYTES
     blocks_at = session_at + SESSION_BYTES
     extras_at = blocks_at + count * BLOCK_BYTES
-    footer_at = extras_at + count * EXTRA_BYTES
-    name_at = footer_at + FOOTER_BYTES
+    footers_at = extras_at + count * EXTRA_BYTES
+    names_at = footers_at + len(distinct) * FOOTER_BYTES
+    name_offsets = [names_at + sum(len(e) for e in encoded[:i]) for i in range(len(encoded))]
+    footer_of = {n: footers_at + i * FOOTER_BYTES for i, n in enumerate(distinct)}
     first, last = tracks[0], tracks[-1]
     disc_type = 0x20 if any(t.mode == "MODE2" for t in tracks) else 0x00
     # Header: version 1.5 as Alcohol 120% writes it, a CD-ROM, one session. The first of the two
     # unknown 16-bit values is 2 in Alcohol's files and DAEMON Tools expects it (Aaru).
     header = SIGNATURE + struct.pack("<BBHHHH", 1, 5, 0x00, 1, 2, 0) + bytes(HEADER_BYTES - 26)
-    dpm_at = name_at + len(MDF_NAME) if disc.dpm is not None else 0
+    dpm_at = names_at + sum(len(e) for e in encoded) if disc.dpm is not None else 0
     header = header[:80] + struct.pack("<II", session_at, dpm_at)
     session = struct.pack("<iiHBBHHII", -MSF_OFFSET, disc.total_sectors, 1, count, 3, 1, len(tracks), 0, blocks_at)
     blocks = [
@@ -286,15 +306,29 @@ def render_mds(disc: Disc, offsets: list[int]) -> bytes:
         _block(0, 0x10 | control(last), 0xA2, _msf_bytes(disc.total_sectors), extras_at + 2 * EXTRA_BYTES),
     ]
     extras = [bytes(EXTRA_BYTES)] * 3
-    for i, (track, offset) in enumerate(zip(tracks, offsets, strict=True)):
+    for i, (track, offset, name) in enumerate(zip(tracks, offsets, names, strict=True)):
         blocks.append(
             _block(WRITTEN_MODES[track.mode], 0x10 | control(track), track.number, _msf_bytes(track.index1),
-                   extras_at + (3 + i) * EXTRA_BYTES, track=True, start=track.index1, offset=offset, footer=footer_at)
+                   extras_at + (3 + i) * EXTRA_BYTES, track=True, start=track.index1, offset=offset, footer=footer_of[name])
         )
         extras.append(struct.pack("<II", MSF_OFFSET if i == 0 else track.pregap, track.length))
-    footer = struct.pack("<IIII", name_at, 1, 0, 0)
+    footers = b"".join(struct.pack("<IIII", at, 1, 0, 0) for at in name_offsets)
     positions = dpm.render_table(disc.dpm, dpm_at) if disc.dpm is not None else b""
-    return header + session + b"".join(blocks) + b"".join(extras) + footer + MDF_NAME + positions
+    return header + session + b"".join(blocks) + b"".join(extras) + footers + b"".join(encoded) + positions
+
+
+def write_descriptor(disc: Disc, path: Path, files: list[tuple[str, int]]) -> Path:
+    """Write a ``.mds`` descriptor at ``path`` for sectors already stored: each track in the file
+    named in ``files``, beside the descriptor, with its INDEX 01 at the offset given. It holds the
+    disc's DPM data, so a reader of Alcohol 120% images gets the sectors of a ``bincue-split`` copy
+    and the DPM data a cue sheet has no place for, without a second copy of the sectors.
+
+    :raises DiscError: the disc has several sessions, which the archiver's descriptors do not hold.
+    """
+    if disc.tracks[-1].session != 1:
+        raise DiscError("an Alcohol 120% descriptor of the archiver holds one session, and the disc has several")
+    path.write_bytes(render_mds(disc, [offset for _, offset in files], [name for name, _ in files]))
+    return path
 
 
 def write_mds(disc: Disc, directory: Path, name: str) -> list[Path]:

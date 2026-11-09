@@ -22,7 +22,7 @@ from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.disc import RAW_SECTOR, Disc, DiscError, SessionGap, Track
 from dinorefurb_disc_archiver.dpm import Dpm
 from dinorefurb_disc_archiver.dpmmeasure import DpmUnavailable, Settings, TocEntry, measure
-from dinorefurb_disc_archiver.pipeline import derive, open_source
+from dinorefurb_disc_archiver.pipeline import derive, fingerprint, open_source, verify_output
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 SAMPLE = Dpm(0, 10, (128, 384, 700))
@@ -108,6 +108,70 @@ class BlockTests(unittest.TestCase):
         self.assertTrue(any("DPM" in note for note in bincue_out["notes"]))
         with open_source(self.dir / "out" / "mds" / "Synth.mds", self.dir, silent_log) as copy:
             self.assertEqual(copy.dpm, SAMPLE)
+
+    def test_a_split_copy_gets_a_descriptor_of_its_bin_files_that_holds_the_dpm(self) -> None:
+        self.disc.dpm = Dpm(150, 50, tuple(range(600, 600 * 41, 600)))
+        manifest = derive(self.disc, self.dir / "out", "Synth", ["bincue-split"], BUILTIN_PROFILES["any"], silent_log, {})
+        (output,) = manifest["outputs"]
+        self.assertEqual(output["verification"]["status"], "matched", output["verification"])
+        self.assertIn("DPM data in Synth.mds", output["verification"]["compared"])
+        self.assertFalse(any("The mds copy holds it" in note for note in output["notes"]))
+        self.assertTrue(any("Synth.mds" in note for note in output["notes"]))
+        directory = self.dir / "out" / "bincue-split"
+        self.assertIn("Synth.mds", sorted(p.name for p in directory.iterdir()))
+        data = (directory / "Synth.mds").read_bytes()
+        self.assertEqual(libmirage_table(data), [(1, 150, 50, list(self.disc.dpm.angles))])
+        # Each track block names its own .bin and the offset of its INDEX 01 there, read the way
+        # libmirage and rust-dos read them: the block's offset at 40, its footer at 52, the
+        # footer's name offset and wide flag.
+        bins = [f"Synth (Track {t.number}).bin" for t in self.disc.tracks]
+        found = []
+        for i in range(len(self.disc.tracks)):
+            block = 88 + 24 + (3 + i) * 80
+            (offset,) = struct.unpack_from("<Q", data, block + 40)
+            (footer,) = struct.unpack_from("<I", data, block + 52)
+            name_at, wide = struct.unpack_from("<II", data, footer)
+            end = data.index(b"\x00\x00", name_at)
+            end += (end - name_at) % 2
+            self.assertEqual(wide, 1)
+            found.append((data[name_at:end].decode("utf-16-le"), offset))
+        self.assertEqual(found, [(bins[0], 0), (bins[1], 150 * RAW_SECTOR)])
+        self.assertLess(len(data), 2048)
+        with open_source(directory / "Synth.mds", self.dir, silent_log) as copy:
+            self.assertEqual(fingerprint(copy), fingerprint(self.disc))
+            self.assertEqual(copy.dpm, self.disc.dpm)
+
+    def test_a_split_copy_whose_descriptor_holds_other_dpm_data_is_a_mismatch(self) -> None:
+        self.disc.dpm = SAMPLE
+        output = pipeline.write_format("bincue-split", self.disc, self.dir / "split", "Synth", silent_log)
+        descriptor = self.dir / "split" / "Synth.mds"
+        data = bytearray(descriptor.read_bytes())
+        data[-4:] = struct.pack("<I", 701)
+        descriptor.write_bytes(bytes(data))
+        found = verify_output(output, self.disc, fingerprint(self.disc), self.dir, silent_log)
+        self.assertIn("the DPM data differs from the source", found.differences)
+
+    def test_the_note_on_a_split_copys_descriptor_names_what_only_the_cue_sheet_keeps(self) -> None:
+        self.disc.dpm = SAMPLE
+        self.disc.tracks[1].isrc = "USABC9900001"
+        output = pipeline.write_format("bincue-split", self.disc, self.dir / "split", "Synth", silent_log)
+        (note,) = [n for n in output.notes if "Synth.mds" in n]
+        self.assertIn("the tracks' ISRC codes", note)
+
+    def test_a_split_copy_of_several_sessions_says_no_copy_holds_the_dpm(self) -> None:
+        data, music = self.disc.tracks
+        disc = Disc([replace(data), replace(music, session=2)], dpm=SAMPLE)
+        manifest = derive(disc, self.dir / "out", "Synth", ["bincue-split"], BUILTIN_PROFILES["any"], silent_log, {})
+        (output,) = manifest["outputs"]
+        self.assertFalse(any(f["path"].endswith(".mds") for f in output["files"]))
+        self.assertTrue(any("no .mds descriptor was written" in note for note in output["notes"]))
+        self.assertFalse(any("The mds copy holds it" in note for note in output["notes"]))
+        self.assertTrue(any("No copy holds it" in note for note in output["notes"]))
+
+    def test_without_dpm_a_split_copy_has_no_descriptor(self) -> None:
+        output = pipeline.write_format("bincue-split", self.disc, self.dir / "split", "Synth", silent_log)
+        self.assertFalse(any(f.suffix == ".mds" for f in output.files))
+        self.assertFalse((self.dir / "split" / "Synth.mds").exists())
 
     def hand_built(self, table: bytes) -> Path:
         """An MDS of the synthetic data track built by hand, with ``table`` after the descriptor."""

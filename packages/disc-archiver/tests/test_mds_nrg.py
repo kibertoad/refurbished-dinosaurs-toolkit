@@ -37,12 +37,16 @@ def mds_descriptor(
     """An MDS descriptor built by hand from the documented layout, independent of the writer.
 
     Each track gives ``mode``, ``sub``, ``size``, ``start``, ``offset``, ``pregap``, ``length``
-    and optionally ``ctl``.
+    and optionally ``ctl`` and ``file``, the file holding it (``file_name`` by default). Each
+    distinct file gets a footer of its own.
     """
     count = len(points) + len(tracks)
     blocks_at = 88 + 24
     extras_at = blocks_at + count * 80
     footer_at = extras_at + count * 8
+    files = list(dict.fromkeys(str(t.get("file", file_name)) for t in tracks))
+    names = [f.encode("utf-16-le") + b"\x00\x00" if wide else f.encode("latin-1") + b"\x00" for f in files]
+    names_at = footer_at + 16 * len(files)
     header = b"MEDIA DESCRIPTOR" + bytes(version) + struct.pack("<HH", medium, sessions) + bytes(88 - 22)
     header = header[:80] + struct.pack("<II", 88, 0)
     session = struct.pack("<iiHBBHHII", -150, 0, 1, count, len(points), 1, len(tracks), 0, blocks_at)
@@ -52,12 +56,14 @@ def mds_descriptor(
         blocks.append(
             bytes([t["mode"], t["sub"], 0x10 | t.get("ctl", 0), 0, i + 1]) + bytes(7)
             + struct.pack("<IH", extras_at + (len(points) + i) * 8, t["size"]) + bytes(18)
-            + struct.pack("<IQII", t["start"], t["offset"], 1, footer_at) + bytes(24)
+            + struct.pack("<IQII", t["start"], t["offset"], 1, footer_at + 16 * files.index(str(t.get("file", file_name))))
+            + bytes(24)
         )
         extras.append(struct.pack("<II", t["pregap"], t["length"]))
-    name = file_name.encode("utf-16-le") + b"\x00\x00" if wide else file_name.encode("latin-1") + b"\x00"
-    footer = struct.pack("<IIII", footer_at + 16, int(wide), 0, 0)
-    return header + session + b"".join(blocks) + b"".join(extras) + footer + name
+    footers = b"".join(
+        struct.pack("<IIII", names_at + sum(len(n) for n in names[:i]), int(wide), 0, 0) for i in range(len(names))
+    )
+    return header + session + b"".join(blocks) + b"".join(extras) + footers + b"".join(names)
 
 
 def with_subchannel(raw: bytes) -> bytes:
@@ -280,6 +286,44 @@ class HandBuiltMdsTests(ImageTestCase):
         tracks, mdf = self.tracks(2352, 0)
         (self.dir / "other.bin").write_bytes(mdf)
         self.assertSameDisc(self.image(tracks, b"", file_name="other.bin", wide=False))
+
+    def file_per_track(self) -> list[dict[str, int]]:
+        """The synthetic disc's tracks, each in a file of its own as a split BIN/CUE copy stores
+        them: track 2's file starts with its pregap, track 3's leaves it out."""
+        tracks, _ = self.tracks(2352, 0)
+        (self.dir / "Hand 1.bin").write_bytes(self.synthetic.data_raw)
+        (self.dir / "Hand 2.bin").write_bytes(self.synthetic.track_pregap(0) + self.synthetic.track_audio(0))
+        (self.dir / "Hand 3.bin").write_bytes(self.synthetic.track_audio(1))
+        return [
+            {**tracks[0], "file": "Hand 1.bin", "offset": 0},  # type: ignore[dict-item]
+            {**tracks[1], "file": "Hand 2.bin", "offset": 150 * RAW_SECTOR},  # type: ignore[dict-item]
+            {**tracks[2], "file": "Hand 3.bin", "offset": 0},  # type: ignore[dict-item]
+        ]
+
+    def test_a_file_per_track(self) -> None:
+        path = self.dir / "Hand.mds"
+        path.write_bytes(mds_descriptor(self.file_per_track()))
+        disc = mds.read_mds(path)
+        self.assertEqual([t.pregap_stored for t in disc.tracks[1:]], [True, False])
+        found = fingerprint(disc)
+        self.assertEqual(found["data"], self.reference["data"])
+        self.assertEqual([a["sha256"] for a in found["audio"]], [a["sha256"] for a in self.reference["audio"]])
+        self.assertEqual([t.start for t in disc.tracks], [t.start for t in self.disc.tracks])
+
+    def test_refused_files_per_track(self) -> None:
+        tracks = self.file_per_track()
+        path = self.dir / "Hand.mds"
+        cases = [
+            ([tracks[0], {**tracks[1], "offset": 3 * RAW_SECTOR}, tracks[2]], "neither starts the file"),
+            ([tracks[0], tracks[1], {**tracks[2], "file": "Hand 4.bin"}], "Hand 4.bin does not exist"),
+            ([*tracks[:2], {**tracks[2], "length": tracks[2]["length"] + 1}], "track 3 runs past the end of Hand 3.bin"),
+            # Back in track 1's file, track 3 has to follow track 1's sectors, not overlap them.
+            ([*tracks[:2], {**tracks[2], "file": "Hand 1.bin"}], "neither follows track 1's sectors"),
+        ]
+        for blocks, message in cases:
+            with self.subTest(message=message):
+                path.write_bytes(mds_descriptor(blocks))
+                self.assertRefused(path, message)
 
     def test_refused_descriptors(self) -> None:
         tracks, mdf = self.tracks(2352, 0)
