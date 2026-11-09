@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import dataerrors, redumper, tools
+from .ccd import crc16
 from .disc import COOKED_SECTOR, DiscError
 from .tools import Log
 
@@ -388,8 +389,18 @@ _REDUMPER_INFO_RANGES = {
 _REDUMPER_INFO_XA_MISMATCHES = re.compile(r"^  CD-XA subheader mismatches: (\d+)", re.MULTILINE)
 _REDUMPER_INFO_REDUMP_ERRORS = re.compile(r"^  REDUMP\.INFO errors: (\d+)", re.MULTILINE)
 _REDUMPER_INFO_RANGE = re.compile(r"(-?\d+)(?:-(-?\d+))?")
-# The SecuROM system (``systems/securom.ixx``) logs its scheme, 1 to 4 or "unknown".
+# The SecuROM system (``systems/securom.ixx``) logs its scheme, 1 to 4 or "unknown", then each
+# sector whose subchannel Q is not the one its position calls for: its position, then the Q it
+# holds as control and ADR, track and index, relative MSF, a zero byte, absolute MSF and CRC.
 _REDUMPER_INFO_SCHEME = re.compile(r"^  scheme: (\S+)", re.MULTILINE)
+_REDUMPER_INFO_Q = re.compile(
+    r"^MSF: (\d\d):(\d\d):(\d\d) Q-Data: ([0-9A-F]{6}) ([0-9A-F]{2}):([0-9A-F]{2}):([0-9A-F]{2}) ([0-9A-F]{2}) "
+    r"([0-9A-F]{2}):([0-9A-F]{2}):([0-9A-F]{2}) ([0-9A-F]{4})[ \t]*$",
+    re.MULTILINE,
+)
+# A Q whose CRC holds and whose absolute address is that of a sector at most this far away is
+# the drive's subchannel out of step with its data, not a mark.
+OUT_OF_STEP_SECTORS = 10
 # The line redumper (``redumper.ixx``) logs when a command stops on an exception.
 _REDUMPER_ERROR = re.compile(r"^error: ", re.MULTILINE)
 # The steps whose warnings ``redumper_disc_analysis`` keeps: those after the dump.
@@ -436,8 +447,45 @@ def _redumper_info(info: str) -> tuple[list[dict[str, object]], list[dict[str, o
             track["redumpInfoErrors"] = int(redump_errors.group(1)) if redump_errors else None
             tracks.append(track)
         elif system == "SecuROM" and (scheme := _REDUMPER_INFO_SCHEME.search(body)):
-            schemes.append({"system": system, "file": file, "scheme": scheme.group(1)})
+            schemes.append({"system": system, "file": file, "scheme": scheme.group(1), **_securom_entries(body)})
     return tracks, schemes
+
+
+def q_crc(q: bytes) -> int:
+    """The CRC of the first 10 bytes of a subchannel Q: CRC-16 with polynomial 0x1021 and initial
+    value 0, inverted, as a CD stores it."""
+    return crc16(q) ^ 0xFFFF
+
+
+def _bcd_frames(minutes: str, seconds: str, frames: str) -> int | None:
+    """Frames of a BCD MSF as redumper prints it in hex, or None when a field is not BCD."""
+    if not (minutes + seconds + frames).isdigit():
+        return None
+    return (int(minutes) * 60 + int(seconds)) * 75 + int(frames)
+
+
+def _securom_entries(body: str) -> dict[str, int]:
+    """Count the sectors a SecuROM block lists, by what their Q holds.
+
+    - ``entries``: every sector listed.
+    - ``crcFailing``: the Q fails its CRC. SecuROM's marks are such sectors, corrupted on the
+      pressing; a read error of the subchannel is one too.
+    - ``outOfStep``: the Q's CRC holds and it gives the absolute address of another sector at most
+      ``OUT_OF_STEP_SECTORS`` away. It is a sound Q, read for a neighbouring sector: the drive's
+      subchannel runs out of step with its data there, and the sector says nothing about marks.
+    """
+    entries = failing = out_of_step = 0
+    for found in _REDUMPER_INFO_Q.finditer(body):
+        g = found.groups()
+        entries += 1
+        q = bytes.fromhex("".join(g[3:11]))
+        if q_crc(q) != int(g[11], 16):
+            failing += 1
+            continue
+        listed, absolute = _bcd_frames(*g[0:3]), _bcd_frames(*g[8:11])
+        if listed is not None and absolute is not None and 0 < abs(absolute - listed) <= OUT_OF_STEP_SECTORS:
+            out_of_step += 1
+    return {"entries": entries, "crcFailing": failing, "outOfStep": out_of_step}
 
 
 def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
@@ -462,7 +510,8 @@ def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
       of ``first`` and ``last`` LBA, zero when redumper logs none), ``xaSubheaderMismatches`` (a
       count, zero when redumper logs none) and ``redumpInfoErrors``.
     - ``protectionSchemes``: each SecuROM block of the info step, as ``system``, ``file`` and
-      ``scheme`` (1 to 4, or ``unknown``).
+      ``scheme`` (1 to 4, or ``unknown``), with the sectors it lists counted by what their Q holds
+      (see :func:`_securom_entries`): ``entries``, ``crcFailing`` and ``outOfStep``.
     - ``warnings``: every warning of the protection, refine, split, hash and info steps, without
       the ``warning:`` prefix, each once, in order.
 

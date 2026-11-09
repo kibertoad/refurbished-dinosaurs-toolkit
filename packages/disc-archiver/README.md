@@ -84,7 +84,7 @@ After the dump, `rip` measures them itself when `--dpm` says so
 
 | `--dpm` | Measures |
 |---|---|
-| `auto` (the default) | when redumper's info step finds SecuROM scheme 4 (the 10-mark layout of SecuROM 4.8 and later) or marks of an `unknown` scheme |
+| `auto` (the default) | when redumper's info step finds SecuROM scheme 4 (the 10-mark layout of SecuROM 4.8 and later) or marks of an `unknown` scheme. An unknown scheme with more than 50 listed sectors out of step (see `protectionSchemes` in [the output folder](#the-output-folder)) still triggers, since an out-of-step subchannel hides the marks, and the trigger says so |
 | `always` | every disc; for StarForce, ProtectCD and CD-Cops, which redumper does not detect |
 | `never` | no disc. A trigger it skips is recorded, so the manifest says the copy lacks the data |
 
@@ -474,7 +474,7 @@ My Game/
   - `universalHashSha1`: the split step's Universal Hash (SHA-1), null when redumper skipped it.
   - `subchannelShift`: the shift in sectors of redumper's `shifting subchannel data` warning, null when it logged none.
   - `dataTracks`: each data track of the info step, as its `file`, its `invalidSyncSectors` (sectors without the data sync pattern, which redumper checks no further), `invalidModeSectors` (a mode above 2), `generatedSectors` (user data entirely `0x55` bytes), `msfErrors`, `eccErrors` and `edcErrors` (sectors whose header address, ECC or EDC is wrong) and `nonCompliantEccErrors` (mode 2 form 1 sectors whose ECC covers the header, which redumper counts apart from `eccErrors`), each a `count` and `ranges` of `first` and `last` LBA, zero when redumper logged none, `xaSubheaderMismatches`, the count of mode 2 sectors whose two subheader copies differ, and `redumpInfoErrors`, redumper's count of sectors with a wrong ECC or EDC or differing mode 2 subheader copies, each sector counted once. LBAs count sectors by their position in the dump. Null when the info step did not run, as after data errors.
-  - `protectionSchemes`: each SecuROM block of the info step, as `system`, `file` and `scheme` (`1` to `4`, or `unknown`). Null when the info step did not run.
+  - `protectionSchemes`: each SecuROM block of the info step, as `system`, `file` and `scheme` (`1` to `4`, or `unknown`), with the sectors the block lists counted by what their subchannel Q holds: `entries` (all of them), `crcFailing` (the Q fails its CRC, as SecuROM's marks and subchannel read errors do) and `outOfStep` (the Q's CRC holds and it gives the address of a sector at most 10 away: the drive returned its subchannel out of step with its data there). Null when the info step did not run. When more than 50 sectors are out of step the rip warns that the dump's subchannel does not show SecuROM's marks and its scheme cannot be trusted. That happens in a drive redumper reads with generic settings because its database lacks it, and the remedy is to copy the disc in a drive redumper knows.
   - `warnings`: every warning of the protection, refine, split, hash and info steps, without the `warning:` prefix, each once, in the order logged. Warnings about the drive and from the dump itself are left out.
 
   `dpm` is the [DPM measurement](#data-positions-dpm). For a rip it is null when nothing called for one, and otherwise holds `trigger` (why it ran or would have) and `status`:

@@ -39,7 +39,7 @@ from .disc import (
     describe_ranges,
     session_gap,
 )
-from .dpm import Dpm, read_sidecar, read_sidecar_record, sidecar_path, trigger, write_sidecar
+from .dpm import Dpm, read_sidecar, read_sidecar_record, sidecar_path, subchannel_out_of_step, trigger, write_sidecar
 from .dpmmeasure import Clock, DpmUnavailable
 from .formats import (
     FORMATS,
@@ -1414,6 +1414,15 @@ def _log_disc_analysis(log: Log, analysis: dict[str, object] | None) -> None:
         found.append(f"write offset {main:+} shifting to {', '.join(others)}")
     if found:
         log(f"redumper's log shows {'; '.join(found)}. The manifest's source.discAnalysis records them.")
+    for scheme in analysis["protectionSchemes"] or []:  # type: ignore[attr-defined]
+        if subchannel_out_of_step(scheme):
+            log(
+                f"warning: in {scheme['outOfStep']} of the {scheme['entries']} sectors redumper's SecuROM check lists, the "
+                "subchannel holds a sound Q of a neighbouring sector: the drive returns its subchannel out of step with its "
+                "data, so the dump's subchannel does not show SecuROM's marks where they are, and its scheme cannot be "
+                "trusted. redumper reads with generic settings in a drive missing from its database; copy the disc in a "
+                "drive redumper knows to keep its subchannel."
+            )
 
 
 def reference_backend(backend: str) -> str:

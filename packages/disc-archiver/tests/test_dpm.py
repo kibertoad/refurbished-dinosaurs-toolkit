@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from fakedrive import FakeDisc, FakeDrive
-from synthetic import SyntheticDisc, edc_sector, iso_image, redumper_analysis_steps, redumper_log
+from synthetic import SyntheticDisc, edc_sector, iso_image, redumper_analysis_steps, redumper_log, securom_entry
 from test_mds_nrg import mds_descriptor
 
 from dinorefurb_disc_archiver import backends, cli, dpm, dpmmeasure, pipeline, scsi
@@ -160,8 +160,9 @@ class BlockTests(unittest.TestCase):
 
 
 class TriggerTests(unittest.TestCase):
-    def analysis(self, securom: str | None) -> dict:  # type: ignore[type-arg]
-        found = backends.redumper_disc_analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(securom=securom))))
+    def analysis(self, securom: str | None, entries: tuple[str, ...] | None = None) -> dict:  # type: ignore[type-arg]
+        steps = redumper_analysis_steps(securom=securom, securom_entries=entries)
+        found = backends.redumper_disc_analysis(redumper_log(extra_lines=tuple(steps)))
         assert found is not None
         return found
 
@@ -170,6 +171,33 @@ class TriggerTests(unittest.TestCase):
 
     def test_an_unknown_scheme_calls_for_dpm(self) -> None:
         self.assertIn("unknown scheme", dpm.trigger(self.analysis("unknown")) or "")
+
+    def test_an_unknown_scheme_of_a_subchannel_out_of_step_says_so_and_calls_for_dpm(self) -> None:
+        # Every sector listed holds the sound Q of the sector after it: the drive's subchannel,
+        # not the pressing, made the scheme unknown, and it hides the marks.
+        entries = tuple(securom_entry(p, p + 1) for p in range(7_000, 7_060))
+        found = dpm.trigger(self.analysis("unknown", entries)) or ""
+        self.assertIn("subchannel ran out of step with its data in 60 sectors", found)
+        self.assertIn("cannot be ruled out", found)
+        # A Q that fails its CRC among them, a mark or a read error, does not change that.
+        found = dpm.trigger(self.analysis("unknown", (*entries, securom_entry(5_000, mark=True)))) or ""
+        self.assertIn("out of step with its data in 60 sectors", found)
+        # A few sectors out of step beside marks leave the marks as the reason, as the rip warns of none.
+        few = (*entries[:3], securom_entry(5_000, mark=True))
+        found = dpm.trigger(self.analysis("unknown", few)) or ""
+        self.assertIn("unknown scheme", found)
+        self.assertNotIn("out of step", found)
+
+    def test_a_rip_warns_of_a_subchannel_out_of_step(self) -> None:
+        lines: list[str] = []
+        many = self.analysis("unknown", tuple(securom_entry(p, p + 1) for p in range(7_000, 7_060)))
+        pipeline._log_disc_analysis(lines.append, many)
+        self.assertTrue(any("subchannel out of step with its data" in line and "60 of the 60" in line for line in lines), lines)
+        # A pressing's marks and a few sectors out of step give no warning.
+        lines.clear()
+        few = self.analysis("4", (securom_entry(5_000, mark=True), securom_entry(7_000, 7_001)))
+        pipeline._log_disc_analysis(lines.append, few)
+        self.assertFalse(any("out of step" in line for line in lines), lines)
 
     def test_older_schemes_and_no_securom_do_not(self) -> None:
         for scheme in ("1", "2", "3", None):

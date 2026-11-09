@@ -134,6 +134,24 @@ TRIGGER_SCHEMES = {
     "unknown": "redumper found SecuROM subchannel marks of an unknown scheme, which may be SecuROM 4.8 or later, "
     "which checks where sectors lie on the disc",
 }
+# An unknown scheme whose list is mostly sound Q of neighbouring sectors: the drive's subchannel was
+# out of step, which hides SecuROM's marks, so SecuROM 4.8 cannot be ruled out.
+TRIGGER_OUT_OF_STEP = (
+    "redumper's SecuROM scheme is unknown because the drive's subchannel ran out of step with its data in "
+    "{sectors} sectors, which hides SecuROM's marks, so SecuROM 4.8 or later, which checks where sectors lie on "
+    "the disc, cannot be ruled out"
+)
+# Out-of-step sectors in a SecuROM list above which the drive's subchannel, not the pressing, shaped
+# the list. A pressing has about ten marks, and a drive that keeps its subchannel in step lists none
+# out of step, so a few subchannel read errors among the out-of-step sectors do not change the call.
+SUBCHANNEL_OUT_OF_STEP = 50
+
+
+def subchannel_out_of_step(scheme: Mapping[str, object]) -> bool:
+    """Whether a ``protectionSchemes`` entry lists more than ``SUBCHANNEL_OUT_OF_STEP`` sectors whose
+    subchannel is out of step with the data. The rip warns of such an entry, and ``trigger`` names
+    it as the reason for an unknown scheme."""
+    return int(scheme.get("outOfStep") or 0) > SUBCHANNEL_OUT_OF_STEP  # type: ignore[call-overload]
 
 
 def trigger(analysis: Mapping[str, object] | None) -> str | None:
@@ -143,12 +161,17 @@ def trigger(analysis: Mapping[str, object] | None) -> str | None:
     """
     if analysis is None:
         return None
-    schemes = analysis.get("protectionSchemes") or []
-    found = [str(s["scheme"]) for s in schemes if s.get("system") == "SecuROM"]  # type: ignore[union-attr]
-    for scheme in ("4", "unknown"):
-        if scheme in found:
-            return TRIGGER_SCHEMES[scheme]
-    return None
+    schemes = [s for s in analysis.get("protectionSchemes") or [] if s.get("system") == "SecuROM"]  # type: ignore[union-attr]
+    found = [str(s["scheme"]) for s in schemes]
+    if "4" in found:
+        return TRIGGER_SCHEMES["4"]
+    unknown = [s for s in schemes if str(s["scheme"]) == "unknown"]
+    if not unknown:
+        return None
+    out_of_step = [s for s in unknown if subchannel_out_of_step(s)]
+    if out_of_step:
+        return TRIGGER_OUT_OF_STEP.format(sectors=sum(int(s["outOfStep"]) for s in out_of_step))
+    return TRIGGER_SCHEMES["unknown"]
 
 
 def sidecar_path(dump: Path) -> Path:
