@@ -94,9 +94,10 @@ offers). The time between the completions of two back-to-back reads, divided by 
 rotation period, gives the angle between their sectors to within whole turns, and the density of
 the steps before gives the whole turns. The period is calibrated every 20,000 sectors from sweeps
 of read pairs one to 64 sectors apart: their times rise by a sector per step and drop by one turn
-at each wrap. Some drives need longer to reach a sector more than a turn or two ahead, and answer
-the reads past that distance a turn late until the wait wraps again, so a drop can come later than
-a turn after the one before but never sooner. Entries are `--dpm-resolution` sectors apart (50), in
+at each wrap. A read completes when its sector passes the head, and a drive whose turnaround
+depends on the distance to the sector answers the reads past some distance a whole turn later or
+sooner than those before it, so the drops do not come a turn apart; the fit of every read time
+counts those whole turns. Entries are `--dpm-resolution` sectors apart (50), in
 `--dpm-passes` passes (2) whose disagreement is the jitter. It takes several minutes; leave the
 computer idle meanwhile. It runs on Windows only, through SCSI pass-through, with the drive the
 dump was made in.

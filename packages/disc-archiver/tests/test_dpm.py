@@ -255,14 +255,17 @@ class MeasurementTests(unittest.TestCase):
         for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 130_000, 50, 599), strict=True)):
             self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
 
-    def test_drops_closer_than_a_turn_refuse_the_sweep(self) -> None:
-        measurement = dpmmeasure._Measurement(FakeDrive(FakeDisc()), lambda: 0, 0, 30_000, Settings(), silent_log)
-        # Rises of 3 ms and a drop of 50 ms every 8 sectors: the drops give a 53 ms turn, about 18
-        # sectors, but come 8 apart.
-        times = iter([500e6 + d * 3e6 - (d // 8) * 53e6 for d in range(1, 65)])
-        with mock.patch.object(measurement, "_timed", lambda anchor, lba: int(next(times))):
-            reason = measurement._sweep(1_000)
-        self.assertEqual(reason, "two drops come 8 sectors apart, sooner than the 17.7 sectors a turn takes")
+    def test_a_drive_that_reaches_far_sectors_sooner_still_calibrates(self) -> None:
+        # The other way round: a slow turnaround of 40 ms, most of a turn out at sector 130,000,
+        # that is 25 ms shorter for sectors more than a turn ahead. The reads past that distance
+        # come a turn sooner, so in a sweep a drop comes only a few sectors after the one before.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, overhead=40e6, jump_turns=1.0, jump_overhead=-25e6)
+        result = measure(drive, drive.clock, 130_000, 160_000, Settings(), silent_log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertEqual(result.record["warnings"], [])
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 130_000, 50, 599), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
 
     def test_a_refused_calibration_keeps_the_sweep_times(self) -> None:
         result = run(FakeDrive(FakeDisc(), jitter=2e6, seed=3))
