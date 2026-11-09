@@ -244,6 +244,37 @@ class MeasurementTests(unittest.TestCase):
         for found, wanted in zip(steps(result.dpm), true_steps(disc, 0, 50, 599), strict=True):
             self.assertLessEqual(abs(found - wanted), 2)
 
+    def test_a_drive_that_reaches_far_sectors_late_still_calibrates(self) -> None:
+        # Past a turn and a half ahead the drive needs 25 ms more to reach the sector (half a
+        # turn out here), so it answers the reads past that distance a turn late until the wait
+        # wraps again, and in a sweep one gap between drops spans more than a turn. Out at sector
+        # 130,000 a turn holds about 16 sectors and a sweep sees only three or four drops.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, jump_turns=1.5, jump_overhead=25e6)
+        result = measure(drive, drive.clock, 130_000, 160_000, Settings(), silent_log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertEqual(result.record["status"], "measured")
+        self.assertEqual(result.record["warnings"], [])
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 130_000, 50, 599), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
+
+    def test_drops_closer_than_a_turn_refuse_the_sweep(self) -> None:
+        measurement = dpmmeasure._Measurement(FakeDrive(FakeDisc()), lambda: 0, 0, 30_000, Settings(), silent_log)
+        # Rises of 3 ms and a drop of 50 ms every 8 sectors: the drops give a 53 ms turn, about 18
+        # sectors, but come 8 apart.
+        times = iter([500e6 + d * 3e6 - (d // 8) * 53e6 for d in range(1, 65)])
+        with mock.patch.object(measurement, "_timed", lambda anchor, lba: int(next(times))):
+            reason = measurement._sweep(1_000)
+        self.assertEqual(reason, "two drops come 8 sectors apart, sooner than the 17.7 sectors a turn takes")
+
+    def test_a_refused_calibration_keeps_the_sweep_times(self) -> None:
+        result = run(FakeDrive(FakeDisc(), jitter=2e6, seed=3))
+        self.assertIsNone(result.dpm)
+        rejected = result.details["rejectedSweeps"]
+        self.assertGreater(len(rejected), 0)
+        self.assertEqual(len(rejected[0]["timesNs"]), 64)
+        self.assertIsInstance(rejected[0]["reason"], str)
+
     def test_a_drive_that_answers_from_its_cache_is_refused(self) -> None:
         result = run(FakeDrive(FakeDisc(), cache_ignores_fua=True))
         self.assertIsNone(result.dpm)
