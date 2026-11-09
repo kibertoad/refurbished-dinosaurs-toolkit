@@ -111,14 +111,17 @@ goes on either way. A measurement that interpolated some steps, made one pass, w
 does not grow outwards, or that the drive read more than a quarter faster or slower than
 `--dpm-speed` asked is kept with a warning.
 
-An accepted measurement goes into the `mds` copy as an Alcohol 120% DPM block, and
+An accepted measurement goes into the `mds` copy as an Alcohol 120% DPM block, and into
+`bincue-split/<name>.mds`, a descriptor of the split copy's own `.bin` files with the same block, so
+the reference copy opens with its DPM data in rust-dos or CDEmu without a conversion.
 `archival/<name>.dpm.json` keeps it with every calibration and step, the read times of each
 sweep a calibration did not use (`rejectedSweeps`: its `lba`, `reason` and `timesNs`), and the
 step `points` with each pass's fractional turns (`fractions`) and unwrapped turns (`passes`). A
 refused measurement's file keeps as much of that as was measured before the refusal. When the formats asked for
-include no `mds`, the rip says so, and a later `convert --format mds` of the dump makes the copy. `convert` of the archival
+include neither `mds` nor `bincue-split`, the rip says so, and a later `convert --format mds` of the dump makes the copy. `convert` of the archival
 cue sheet takes the `.dpm.json` beside it, and of an `.mds` the image's own DPM block, into the
-`mds` copy. Other formats have no place for it and list it under `notCompared`. The manifest
+`mds` copy and the `bincue-split` descriptor, whose DPM data and tracks `verification` compares
+with the source. Other formats have no place for it and list it under `notCompared`. The manifest
 records it in [`source.dpm`](#the-output-folder).
 
 `disc-archiver dpm --drive E: --input "<folder>/archival/<name>.cue"` measures a disc dumped before: one ripped with `--dpm never`, one whose measurement was refused, or one to measure again in a drive that reads it better, such as a scratched disc in a drive that copes with scratches better than the one that dumped it. Before timing anything it checks that the disc in the drive is the dumped one. The drive's table of contents has to list the dump's tracks (number, data or audio, INDEX 01 address) and the dump's lead-out. Where the dump only assumed the gap before a later session (a cue sheet whose later session opens with audio), that session's addresses and the lead-out after it are compared from where the drive puts the session's first track, which has to leave at least the standard gap. Then the user data of the primary volume descriptor and of 24 sectors spread over the first data track has to equal the dump's. A sector the dump or the drive could not read is left out, as is one the dump kept with a data error (its recorded EDC fails). At least 8 matching sectors have to hold more than zeros, since a sector of zeros matches on any disc. Another disc is refused with exit code 3 and nothing is written. Then the disc is measured as `rip` measures it, with the same `--dpm-speed`, `--dpm-resolution` and `--dpm-passes`, and `archival/<name>.dpm.json` is written beside the cue sheet. An existing one is kept unless `--replace` is given, and even then a refused measurement does not replace an accepted one: the command exits 1 and the record it prints has `file` null. The record (printed as JSON, and in the file) has `trigger` `disc-archiver dpm was run`, `file` named relative to the cue sheet, and `separate`: the archiver version that measured and `sameDisc`, what the check compared (`tracks`, `leadOut`, `assumedGaps` with each assumed session gap and the one the drive gave, `sectorsCompared`, `sectorsBlank` for the matching sectors of zeros among them, `sectorsNotRead`). The rip's manifest is left as it was; `convert` of the cue sheet then takes the measurement into the `mds` copy and the new manifest's `source.dpm.measurement`. Exit codes: `0` measured, `1` refused or failed, `3` another disc.
@@ -149,7 +152,7 @@ Writing the copy (`--format`, repeat for several):
 
 | Format | Files | Holds |
 |---|---|---|
-| `bincue-split` | one `.bin` per track and a `.cue` | Every raw sector, pregaps included: the Redump layout. The sheet keeps the source sheet's `CATALOG`, CD-Text (`TITLE`, `PERFORMER`, `SONGWRITER`), `ISRC`, `FLAGS` and sessions in the line order redumper writes, so a redumper dump's sheet is written back byte for byte. |
+| `bincue-split` | one `.bin` per track and a `.cue` | Every raw sector, pregaps included: the Redump layout. The sheet keeps the source sheet's `CATALOG`, CD-Text (`TITLE`, `PERFORMER`, `SONGWRITER`), `ISRC`, `FLAGS` and sessions in the line order redumper writes, so a redumper dump's sheet is written back byte for byte. When the source has [DPM data](#data-positions-dpm), `<name>.mds` beside the sheet is an Alcohol 120% descriptor of the same `.bin` files that holds it: a few KB for the tracks and about 24 KB of DPM data for a full CD, with no second copy of the sectors. A reader that times reads by DPM (rust-dos, CDEmu) opens the `.mds` instead of the `.cue`. |
 | `bincue` | one `.bin` and a `.cue` | The same in one file. Read by most tools and by the toolkit's `OriginalContentSource`. |
 | `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. The archiver writes the catalog number, the indexes and the FLAGS a track's control field carries into the `.ccd`, and no ISRC codes or CD-Text. |
 | `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. chdman releases up to MAME 0.289 store no sessions; see [Sessions](#sessions). A CHD holds no catalog number, ISRC codes, FLAGS, indexes after INDEX 01 or CD-Text. |

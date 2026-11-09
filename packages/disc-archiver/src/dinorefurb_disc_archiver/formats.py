@@ -56,7 +56,8 @@ FORMATS: tuple[Format, ...] = (
     Format(
         "bincue-split",
         "BIN/CUE, one file per track",
-        "The Redump layout: every raw sector of every track, pregaps included, one .bin per track.",
+        "The Redump layout: every raw sector of every track, pregaps included, one .bin per track. When the disc "
+        "has DPM data, an Alcohol 120% .mds descriptor beside the cue sheet names the same .bin files and holds it.",
         complete=True,
         holds=CUE_METADATA,
         holder="a cue sheet",
@@ -279,7 +280,23 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
         cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
     write_cue(sheet, render_cue(disc, cue_files))
-    return Output("bincue-split", directory, sheet, [sheet, *files], [*_virtual_pregap_notes(disc), *_cue_gap_notes(disc)])
+    notes = [*_virtual_pregap_notes(disc), *_cue_gap_notes(disc)]
+    written = [sheet, *files]
+    if disc.dpm is not None:
+        if disc.tracks[-1].session == 1:
+            placements = [(f.name, t.pregap * RAW_SECTOR if t.pregap_writable else 0) for f, t in zip(files, disc.tracks, strict=True)]
+            written.append(mds.write_descriptor(disc, directory / f"{name}.mds", placements))
+            notes.append(
+                f"{name}.mds is an Alcohol 120% descriptor of the same .bin files that holds the DPM data (where the "
+                "sectors lie on the disc), which a cue sheet has no place for. Open it instead of the cue sheet in a "
+                "reader that times reads by DPM, such as rust-dos or CDEmu."
+            )
+        else:
+            notes.append(
+                "The disc has DPM data, but no .mds descriptor was written beside the cue sheet: the archiver's "
+                "descriptors hold one session, and the disc has several."
+            )
+    return Output("bincue-split", directory, sheet, written, notes)
 
 
 def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
