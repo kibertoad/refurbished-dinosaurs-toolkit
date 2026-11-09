@@ -134,6 +134,13 @@ TRIGGER_SCHEMES = {
     "unknown": "redumper found SecuROM subchannel marks of an unknown scheme, which may be SecuROM 4.8 or later, "
     "which checks where sectors lie on the disc",
 }
+# An unknown scheme whose every listed sector holds a sound Q of a neighbouring sector: the drive's
+# subchannel was out of step, which hides SecuROM's marks, so SecuROM 4.8 cannot be ruled out.
+TRIGGER_OUT_OF_STEP = (
+    "redumper's SecuROM scheme is unknown because the drive's subchannel ran out of step with its data in "
+    "{sectors} sectors, which hides SecuROM's marks, so SecuROM 4.8 or later, which checks where sectors lie on "
+    "the disc, cannot be ruled out"
+)
 
 
 def trigger(analysis: Mapping[str, object] | None) -> str | None:
@@ -143,12 +150,17 @@ def trigger(analysis: Mapping[str, object] | None) -> str | None:
     """
     if analysis is None:
         return None
-    schemes = analysis.get("protectionSchemes") or []
-    found = [str(s["scheme"]) for s in schemes if s.get("system") == "SecuROM"]  # type: ignore[union-attr]
-    for scheme in ("4", "unknown"):
-        if scheme in found:
-            return TRIGGER_SCHEMES[scheme]
-    return None
+    schemes = [s for s in analysis.get("protectionSchemes") or [] if s.get("system") == "SecuROM"]  # type: ignore[union-attr]
+    found = [str(s["scheme"]) for s in schemes]
+    if "4" in found:
+        return TRIGGER_SCHEMES["4"]
+    unknown = [s for s in schemes if str(s["scheme"]) == "unknown"]
+    if not unknown:
+        return None
+    out_of_step = sum(int(s.get("outOfStep") or 0) for s in unknown)
+    if out_of_step and not any(s.get("crcFailing") for s in unknown):
+        return TRIGGER_OUT_OF_STEP.format(sectors=out_of_step)
+    return TRIGGER_SCHEMES["unknown"]
 
 
 def sidecar_path(dump: Path) -> Path:

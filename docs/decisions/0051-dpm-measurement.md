@@ -49,8 +49,11 @@ established dumper the archiver runs can measure DPM.
    a turn at the median step; more than 1% of steps with a density outside a CD's; angles that do
    not grow. A refused measurement is recorded with its reason and written into no copy.
 4. Trigger: `rip --dpm auto` (the default) measures when redumper's analysis holds SecuROM scheme
-   4 or `unknown`; `always` measures any disc, for the protections redumper does not detect;
-   `never` skips it and records that a trigger was skipped. The copy goes on whatever the
+   4 or `unknown`. A drive whose subchannel runs out of step with its data lists thousands of
+   sectors holding a neighbour's sound Q and none of the marks, so redumper calls the scheme
+   `unknown`. The trigger still fires then, since the marks are hidden rather than absent, and
+   its reason says the subchannel was out of step. `always` measures any disc, for the
+   protections redumper does not detect; `never` skips it and records that a trigger was skipped. The copy goes on whatever the
    measurement's outcome.
 5. Storage: the measurement and its details in `archival/<name>.dpm.json` beside the dump, the
    manifest's `source.dpm`, and an Alcohol 120% DPM block in the `mds` output. A cue sheet with a

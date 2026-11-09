@@ -1115,6 +1115,9 @@ def archive(
 
 
 DPM_MODES = ("auto", "always", "never")
+# Sectors of a SecuROM list whose subchannel is out of step before the rip warns. A pressing has
+# about ten marks, and a drive that keeps its subchannel in step lists none.
+SUBCHANNEL_OUT_OF_STEP_WARNING = 50
 
 
 def open_dpm_drive(drive: str) -> tuple[dpmmeasure.CheckedDrive, Clock]:
@@ -1414,6 +1417,15 @@ def _log_disc_analysis(log: Log, analysis: dict[str, object] | None) -> None:
         found.append(f"write offset {main:+} shifting to {', '.join(others)}")
     if found:
         log(f"redumper's log shows {'; '.join(found)}. The manifest's source.discAnalysis records them.")
+    for scheme in analysis["protectionSchemes"] or []:  # type: ignore[attr-defined]
+        if scheme.get("outOfStep", 0) > SUBCHANNEL_OUT_OF_STEP_WARNING:
+            log(
+                f"warning: in {scheme['outOfStep']} of the {scheme['entries']} sectors redumper's SecuROM check lists, the "
+                "subchannel holds a sound Q of a neighbouring sector: the drive returns its subchannel out of step with its "
+                "data, so the dump's subchannel does not show SecuROM's marks where they are, and its scheme cannot be "
+                "trusted. redumper reads with generic settings in a drive missing from its database; copy the disc in a "
+                "drive redumper knows to keep its subchannel."
+            )
 
 
 def reference_backend(backend: str) -> str:

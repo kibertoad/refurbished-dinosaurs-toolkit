@@ -417,6 +417,7 @@ def redumper_analysis_steps(
     write_offset: int = -572,
     info: bool = True,
     securom: str | None = "unknown",
+    securom_entries: tuple[str, ...] | None = None,
 ) -> list[str]:
     """The protection, split, hash and info steps of a redumper b767 disc run, after its dump.
 
@@ -424,7 +425,8 @@ def redumper_analysis_steps(
     ``info.ixx``, ``systems/s_cdrom.ixx`` and ``systems/securom.ixx``, with made-up values.
     ``protection`` is one protection or several; ``offsets`` the offset configuration's records as
     (position, header LBA, count, offset); ``info`` adds the hash and info steps; ``securom`` the
-    SecuROM block's scheme, or no block when None.
+    SecuROM block's scheme, or no block when None, and ``securom_entries`` the sectors it lists
+    (made with :func:`securom_entry`; by default one mark).
     """
     if isinstance(protection, str):
         protected = [f"protection: {protection}"]
@@ -467,10 +469,39 @@ def redumper_analysis_steps(
             "warning: shifting subchannel data (shift: -3)",
         ]
         if securom is not None:
-            lines += ["", f"SecuROM [{file}]:", f"  scheme: {securom}", "MSF: 00:01:70 Q-Data: 410100 00:00:02 00 00:01:73 30C5"]
+            entries = (securom_entry(5_000, mark=True),) if securom_entries is None else securom_entries
+            lines += ["", f"SecuROM [{file}]:", f"  scheme: {securom}", *entries]
         lines.append("")
     lines += ["", "*** END (time check: 0s)"]
     return lines
+
+
+def _q_crc(q: bytes) -> int:
+    """A CD's Q CRC: the remainder of the 10 bytes by polynomial 0x11021, inverted. Long division,
+    written apart from the archiver's shift register."""
+    value = int.from_bytes(q, "big") << 16
+    for bit in range(len(q) * 8 + 15, 15, -1):
+        if value >> bit & 1:
+            value ^= 0x11021 << (bit - 16)
+    return (value & 0xFFFF) ^ 0xFFFF
+
+
+def _bcd_msf(frames: int) -> str:
+    return "{:02d}:{:02d}:{:02d}".format(*msf(frames))
+
+
+def securom_entry(position: int, held: int | None = None, mark: bool = False) -> str:
+    """A line of redumper's SecuROM list (``systems/securom.ixx``): the sector ``position`` frames
+    from 00:00:00 holding the Q of the sector ``held`` (itself by default) in track 1. ``mark``
+    flips a bit of its relative minutes after the CRC was taken, as a SecuROM mark has it."""
+    held = position if held is None else held
+    q = bytearray.fromhex("410101" + (_bcd_msf(held - 150) + "00" + _bcd_msf(held)).replace(":", ""))
+    crc = _q_crc(bytes(q))
+    if mark:
+        q[3] ^= 0x20
+    shown = q.hex().upper()
+    fields = [shown[0:6], ":".join((shown[6:8], shown[8:10], shown[10:12])), shown[12:14], ":".join((shown[14:16], shown[16:18], shown[18:20]))]
+    return f"MSF: {_bcd_msf(position)} Q-Data: {' '.join(fields)} {crc:04X}"
 
 
 # redumper's CD dump files start at this LBA, the start of the lead-in, with 588 samples per

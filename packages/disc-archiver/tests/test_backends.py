@@ -13,7 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from synthetic import REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, redumper_analysis_steps, redumper_log
+from synthetic import REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, redumper_analysis_steps, redumper_log, securom_entry
 
 from dinorefurb_disc_archiver import backends, cli, dataerrors, dpm, pipeline, redumper
 from dinorefurb_disc_archiver.disc import DiscError
@@ -232,7 +232,7 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(source["dpm"]["status"], "unavailable")
         self.assertIn("unknown scheme", source["dpm"]["trigger"])
         analysis = source["discAnalysis"]
-        self.assertEqual(analysis["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown"}])
+        self.assertEqual(analysis["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown", "entries": 1, "crcFailing": 1, "outOfStep": 0}])
         self.assertEqual([s["offset"] for s in analysis["offsetShifts"]], [-572, 16, -572])
         self.assertIn(
             "redumper's log shows SecuROM scheme unknown in Synth Disc (Track 1).bin; write offset -572 shifting to +16 in 1 range",
@@ -652,7 +652,7 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(found["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown"}])
+        self.assertEqual(found["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown", "entries": 1, "crcFailing": 1, "outOfStep": 0}])
         # Each warning once, in order; the Q-Data lines after the SecuROM block are not kept.
         self.assertEqual(
             found["warnings"],
@@ -691,7 +691,25 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
         file = "Game [Rev 1] (Track 1).bin"
         found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(file=file))))
         self.assertEqual([(t["file"], t["msfErrors"]["count"]) for t in found["dataTracks"]], [(file, 613)])
-        self.assertEqual(found["protectionSchemes"], [{"system": "SecuROM", "file": file, "scheme": "unknown"}])
+        self.assertEqual(found["protectionSchemes"], [{"system": "SecuROM", "file": file, "scheme": "unknown", "entries": 1, "crcFailing": 1, "outOfStep": 0}])
+
+    def test_the_securom_list_is_counted_by_what_each_q_holds(self) -> None:
+        # Two marks, whose Q fails its CRC; 3 sectors holding the sound Q of the sector after
+        # them, as a drive whose subchannel runs out of step gives; one holding its own Q but
+        # listed anyway, which is neither.
+        entries = (
+            securom_entry(5_000, mark=True),
+            securom_entry(6_000, mark=True),
+            *(securom_entry(p, p + 1) for p in (7_000, 7_001, 7_002)),
+            securom_entry(8_000),
+        )
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(securom_entries=entries))))
+        scheme = found["protectionSchemes"][0]
+        self.assertEqual((scheme["entries"], scheme["crcFailing"], scheme["outOfStep"]), (6, 2, 3))
+
+    def test_the_q_crc_is_a_cds(self) -> None:
+        # The Q of the first sector of track 1, as a drive reads it.
+        self.assertEqual(backends.q_crc(bytes.fromhex("41010100000000000200")), 0x2832)
 
     def test_every_sector_count_of_the_info_step_is_kept(self) -> None:
         # Lines in the order systems/s_cdrom.ixx logs them; "ECC errors (non-compliant)" must not
