@@ -3,7 +3,11 @@
 The angle between two sectors is the time between the completions of two back-to-back reads of
 them, divided by the rotation period, modulo one turn. The disc keeps turning while the drive
 takes the second command, and the time from reading a sector off the disc to reporting it is the
-same for both reads, so neither counts. The whole turns come from the density of the bins before.
+same for both reads, so neither counts. The whole turns are the nearest to those the calibrated
+sectors per turn predict, moved by at most a quarter turn towards the bins before (see ``_unwrap``).
+Each pass starts with spin-up reads at its first sector, since the drive comes back from the last
+calibration near the end of the track and needs a few reads to speed the disc up again, and so
+does each step read again after the passes.
 
 The rotation period is calibrated from sweeps of read pairs (S, S+d), d = 1 to ``sweep``: the
 time grows by one sector's time per step, and drops by one turn where the wait wraps. The period
@@ -51,6 +55,8 @@ MAXIMUM_MEDIAN_JITTER = 0.02
 # a pressing has on purpose span many bins and move the local median with them.
 OUTLIER_TURNS = 0.25
 NEIGHBOURS = 8
+# How far the bins before may move a bin's predicted turns from the calibration's, in turns.
+UNWRAP_FOLLOW = 0.25
 REMEASURE_READS = 3
 # Two sweeps of a calibration must agree on the period and the sector time within this share.
 CALIBRATION_AGREEMENT = 0.02
@@ -211,6 +217,14 @@ class _Measurement:
         self.cache_hits = 0
         self.calibrations: list[Calibration] = []
         self.calibration_attempts = 0
+        # Each sweep a calibration did not use: where, why, and its read times, for a later look
+        # at a refusal.
+        self.rejected_sweeps: list[dict[str, object]] = []
+        # The step points and each pass's fractional turns and unwrapped turns, kept as they are
+        # measured so a refused measurement's file holds them too.
+        self.points: list[int] = []
+        self.fractions: list[list[float | None]] = []
+        self.passes: list[list[float | None]] = []
         # A read off the disc waits for its sector to come round, so it takes at least the
         # drive's turnaround: the shortest time of the calibration sweeps, whose sawtooth shows
         # the reads reached the disc. A read faster than half of that came from the cache. 0
@@ -220,6 +234,17 @@ class _Measurement:
     def calibration_details(self) -> list[dict[str, int]]:
         """Each calibration as the measurement file keeps it."""
         return [{"lba": c.lba, "periodNs": round(c.period), "sectorTimeNs": round(c.sector_time)} for c in self.calibrations]
+
+    def details(self) -> dict[str, object]:
+        """What was measured, as the measurement file keeps it: the calibrations, the rejected
+        sweeps, and once the passes ran, the step points with each pass's fractional turns
+        (``fractions``, the times modulo a turn) and the turns unwrapped from them (``passes``)."""
+        found: dict[str, object] = {"calibrations": self.calibration_details(), "rejectedSweeps": self.rejected_sweeps}
+        if self.fractions:
+            found["points"] = self.points
+            found["fractions"] = [[None if v is None else round(v, 5) for v in p] for p in self.fractions]
+            found["passes"] = [[None if v is None else round(v, 5) for v in p] for p in self.passes]
+        return found
 
     # Reads
 
@@ -240,17 +265,22 @@ class _Measurement:
 
     # Calibration
 
-    def _sweep(self, lba: int) -> tuple[float, float, float] | str:
-        """The period, sector time and shortest time one sweep gives, or why it gave none."""
-        times = []
+    def _sweep(self, lba: int) -> tuple[tuple[float, float, float] | str, list[int]]:
+        """The period, sector time and shortest time one sweep gives, or why it gave none, with
+        the read times it took."""
+        read: list[int] = []
         for d in range(1, self.settings.sweep + 1):
             try:
                 elapsed = self._timed(lba, lba + d)
             except DriveError as error:
-                return f"a read failed ({error})"
+                return f"a read failed ({error})", read
             if elapsed is None:
-                return "the drive answered from its cache"
-            times.append(float(elapsed))
+                return "the drive answered from its cache", read
+            read.append(elapsed)
+        return self._fit_sweep([float(t) for t in read]), read
+
+    def _fit_sweep(self, times: list[float]) -> tuple[float, float, float] | str:
+        """The period, sector time and shortest time of a sweep's read times, or why they give none."""
         # Reads off the disc wait up to a turn, at least 6 sectors at the requested speed. Times
         # that stay within 2 sectors of each other never waited for the disc.
         if max(times) - min(times) < 2 * 1e9 / (75 * self.settings.speed):
@@ -276,9 +306,10 @@ class _Measurement:
             return "the drops of the read times disagree on the rotation period"
         period = _median([sector_time - steps[i] for i in kept])
         per_turn = period / sector_time
-        spacing = [b - a for a, b in zip(kept, kept[1:], strict=False)]
-        if spacing and abs(_median(spacing) - per_turn) > 1.5:
-            return f"the drops come every {_median(spacing):.1f} sectors, while the times give {per_turn:.1f} sectors per turn"
+        # Where the drops come is no check: a read completes when its sector passes the head, so
+        # a drive whose turnaround grows or shrinks with the distance to the sector answers some
+        # reads a whole turn later or sooner than its neighbours, which moves a drop by up to a
+        # turn either way. The fit below counts those whole turns and checks every read time.
         low, high = SECTORS_PER_TURN_RANGE
         if not low <= per_turn <= high:
             return f"the times give {per_turn:.1f} sectors per turn, outside a CD's {low:.0f} to {high:.0f}"
@@ -298,19 +329,33 @@ class _Measurement:
         for attempt in range(CALIBRATION_ATTEMPTS):
             at = min(lba + attempt * self.settings.sweep * 2, self.end - self.settings.sweep - 1)
             self.calibration_attempts += 1
-            first, second = self._sweep(at), self._sweep(at)
-            if isinstance(first, str) or isinstance(second, str):
-                reasons.append(first if isinstance(first, str) else second)
+            first, first_times = self._sweep(at)
+            if isinstance(first, str):
+                self._reject(at, first, first_times)
+                reasons.append(first)
+                continue
+            second, second_times = self._sweep(at)
+            if isinstance(second, str):
+                # The first sweep goes unused too, so it is kept with the reason.
+                self._reject(at, second, first_times)
+                self._reject(at, second, second_times)
+                reasons.append(second)
                 continue
             (p1, s1, m1), (p2, s2, m2) = first, second
             if abs(p1 - p2) > CALIBRATION_AGREEMENT * p1 or abs(s1 - s2) > CALIBRATION_AGREEMENT * s1:
-                reasons.append(f"two sweeps disagree: periods {p1 / 1e6:.2f} and {p2 / 1e6:.2f} ms")
+                reason = f"two sweeps disagree: periods {p1 / 1e6:.2f} and {p2 / 1e6:.2f} ms"
+                self._reject(at, reason, first_times)
+                self._reject(at, reason, second_times)
+                reasons.append(reason)
                 continue
             floor = 0.5 * min(m1, m2)
             self.cache_floor = floor if not self.cache_floor else min(self.cache_floor, floor)
             # A sweep times the turns around its middle.
             return Calibration(at + self.settings.sweep // 2, (p1 + p2) / 2, (s1 + s2) / 2)
         raise _Refused(f"the rotation could not be calibrated at sector {lba}: {'; '.join(dict.fromkeys(reasons))}")
+
+    def _reject(self, lba: int, reason: str, times: list[int]) -> None:
+        self.rejected_sweeps.append({"lba": lba, "reason": reason, "timesNs": times})
 
     def _period(self, lba: int) -> Calibration:
         """The calibration at ``lba``, interpolated between the two around it.
@@ -362,25 +407,48 @@ class _Measurement:
                 self.log(f"DPM: {100 * i // len(points)}% of the pass, sector {lba}")
         return fractions
 
+    def _spin_up(self, lba: int) -> None:
+        """Read ``lba`` a few times, so the spindle turns at its speed there before reads are timed.
+
+        Before the first calibration the drive spins up; before each pass it comes back from the
+        last calibration near the end of the track, and before a step is read again it comes back
+        from wherever the reads before left it. A drive at constant linear velocity takes several
+        reads to change the disc's speed for the new radius, and reads timed meanwhile measure
+        against a period the disc does not yet turn at.
+        """
+        for _ in range(SPIN_UP_READS):
+            try:
+                self.drive.read(lba)
+            except DriveError:
+                pass
+
     def _unwrap(self, fractions: list[float | None], points: list[int]) -> list[float | None]:
-        """Whole turns for each bin, from the density of the bins before it."""
+        """Whole turns for each bin: the nearest to the turns the calibration predicts for its step,
+        moved by the median of how far the bins before lay from their prediction.
+
+        The calibration gives the turns absolutely; the bins before only follow a density that
+        differs from it, as a pressing's bands do, and may move the prediction by at most
+        ``UNWRAP_FOLLOW`` turns. Predicting from the bins before alone follows a run of bad
+        steps, such as the drive settling after the seek to the start of a pass, a whole turn off
+        and keeps every later bin there.
+        """
         turns: list[float | None] = []
-        recent: list[float] = []
+        offsets: list[float] = []
         for i, fraction in enumerate(fractions):
             if fraction is None:
                 turns.append(None)
                 continue
-            if recent:
-                predicted = _median(recent[-NEIGHBOURS:])
-            else:
-                predicted = self.settings.resolution / self._period(points[i + 1]).sectors_per_turn
+            calibrated = self.settings.resolution / self._period(points[i + 1]).sectors_per_turn
+            follow = _median(offsets[-NEIGHBOURS:]) if offsets else 0.0
+            predicted = calibrated + max(-UNWRAP_FOLLOW, min(UNWRAP_FOLLOW, follow))
             value = round(predicted - fraction) + fraction
             turns.append(value)
-            recent.append(value)
+            offsets.append(value - calibrated)
         return turns
 
     def _remeasure(self, i: int, points: list[int], expected: float) -> float | None:
         values = []
+        self._spin_up(points[i])
         for _ in range(REMEASURE_READS):
             try:
                 elapsed = self._timed(points[i], points[i + 1])
@@ -405,11 +473,7 @@ class _Measurement:
                 f"{settings.resolution}-sector steps and room for four {settings.sweep}-sector calibration sweeps"
             )
         self.drive.set_speed(settings.kilobytes_per_second)
-        for _ in range(SPIN_UP_READS):
-            try:
-                self.drive.read(self.first)
-            except DriveError:
-                pass
+        self._spin_up(self.first)
         positions = list(range(self.first, self.end - settings.sweep - 1, settings.recalibrate_every))
         positions.append(self.end - settings.sweep - 1)
         self.log(f"DPM: calibrating the rotation at {len(positions)} places")
@@ -418,10 +482,14 @@ class _Measurement:
             if self.calibrations and calibration.lba <= self.calibrations[-1].lba:
                 continue
             self.calibrations.append(calibration)
-        passes = []
+        self.points = points
+        passes = self.passes
         for number in range(settings.passes):
             self.log(f"DPM: pass {number + 1} of {settings.passes} over {bins} steps of {settings.resolution} sectors")
-            passes.append(self._unwrap(self._pass(points), points))
+            self._spin_up(self.first)
+            fractions = self._pass(points)
+            self.fractions.append(fractions)
+            passes.append(self._unwrap(fractions, points))
         if self.timed_reads and self.cache_hits > MAXIMUM_CACHE_HIT_SHARE * self.timed_reads:
             raise _Refused(
                 f"{self.cache_hits} of {self.timed_reads} timed reads came back in under half the time the calibration "
@@ -522,9 +590,7 @@ class _Measurement:
             "calibrationAttempts": self.calibration_attempts,
         }
         details: dict[str, object] = {
-            "calibrations": self.calibration_details(),
-            "points": points,
-            "passes": [[None if v is None else round(v, 5) for v in p] for p in passes],
+            **self.details(),
             "steps": [{"turns": round(v, 5), "status": s} for v, s in zip(final, status, strict=True)],
         }
         return dpm, stats, details, warnings
@@ -563,7 +629,7 @@ def measure(drive: Drive, clock: Clock, first: int, end: int, settings: Settings
                 },
                 "warnings": [],
             },
-            {"calibrations": measurement.calibration_details()},
+            measurement.details(),
         )
     for warning in warnings:
         log(f"DPM: warning: {warning}")

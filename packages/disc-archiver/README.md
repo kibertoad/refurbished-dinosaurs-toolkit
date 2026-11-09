@@ -91,9 +91,12 @@ After the dump, `rip` measures them itself when `--dpm` says so
 The measurement times single-sector READ(10) commands with Force Unit Access over the first data
 track, at the speed `--dpm-speed` fixes (4x by default; Alcohol 120% advises the lowest a drive
 offers). The time between the completions of two back-to-back reads, divided by the disc's
-rotation period, gives the angle between their sectors to within whole turns, and the density of
-the steps before gives the whole turns. The period is calibrated every 20,000 sectors from sweeps
-of read pairs one to 64 sectors apart. Entries are `--dpm-resolution` sectors apart (50), in
+rotation period, gives the angle between their sectors to within whole turns. The whole turns are the nearest to those the calibrated sectors per turn predict, which the steps before may move by at most a quarter turn, so a pressing's density bands are followed but a run of bad steps cannot carry the rest of the disc a turn off. Each pass starts with a few reads at its first sector, so the drive has the disc up to speed again after the last calibration near the end of the track, and so does each step read again after the passes. The period is calibrated every 20,000 sectors from sweeps
+of read pairs one to 64 sectors apart: their times rise by a sector per step and drop by one turn
+at each wrap. A read completes when its sector passes the head, and a drive whose turnaround
+depends on the distance to the sector answers the reads past some distance a whole turn later or
+sooner than those before it, so the drops do not come a turn apart; the fit of every read time
+counts those whole turns. Entries are `--dpm-resolution` sectors apart (50), in
 `--dpm-passes` passes (2) whose disagreement is the jitter. It takes several minutes; leave the
 computer idle meanwhile. It runs on Windows only, through SCSI pass-through, with the drive the
 dump was made in, or later in any drive with `disc-archiver dpm` (below).
@@ -109,7 +112,10 @@ does not grow outwards, or that the drive read more than a quarter faster or slo
 `--dpm-speed` asked is kept with a warning.
 
 An accepted measurement goes into the `mds` copy as an Alcohol 120% DPM block, and
-`archival/<name>.dpm.json` keeps it with every calibration and step. When the formats asked for
+`archival/<name>.dpm.json` keeps it with every calibration and step, the read times of each
+sweep a calibration did not use (`rejectedSweeps`: its `lba`, `reason` and `timesNs`), and the
+step `points` with each pass's fractional turns (`fractions`) and unwrapped turns (`passes`). A
+refused measurement's file keeps as much of that as was measured before the refusal. When the formats asked for
 include no `mds`, the rip says so, and a later `convert --format mds` of the dump makes the copy. `convert` of the archival
 cue sheet takes the `.dpm.json` beside it, and of an `.mds` the image's own DPM block, into the
 `mds` copy. Other formats have no place for it and list it under `notCompared`. The manifest

@@ -231,11 +231,14 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(len(result.details["steps"]), 599)
 
     def test_a_band_of_longer_sectors_shows_in_the_steps(self) -> None:
-        result = run(FakeDrive(FakeDisc([(10_000, 12_000, 0.03)])))
+        # The sectors from 10,000 are 3% longer, so a step there spans more of a turn, less the
+        # little a turn grows by from step 195 to step 210.
+        disc = FakeDisc([(10_000, 12_000, 0.03)])
+        result = run(FakeDrive(disc))
         assert result.dpm is not None
-        found = steps(result.dpm)
-        before, inside = found[195], found[210]
-        self.assertAlmostEqual(inside / before, 1.03, delta=0.005)
+        found, wanted = steps(result.dpm), true_steps(disc, 0, 50, 599)
+        self.assertAlmostEqual(found[210] / found[195], wanted[210] / wanted[195], delta=0.002)
+        self.assertGreater(found[210] / found[195], 1.02)
 
     def test_answers_a_turn_late_are_read_again(self) -> None:
         disc = FakeDisc()
@@ -243,6 +246,96 @@ class MeasurementTests(unittest.TestCase):
         assert result.dpm is not None
         for found, wanted in zip(steps(result.dpm), true_steps(disc, 0, 50, 599), strict=True):
             self.assertLessEqual(abs(found - wanted), 2)
+
+    def test_a_drive_that_reaches_far_sectors_late_still_calibrates(self) -> None:
+        # Past a turn and a half ahead the drive needs 25 ms more to reach the sector (half a
+        # turn out here), so it answers the reads past that distance a turn late until the wait
+        # wraps again, and in a sweep one gap between drops spans more than a turn. Out at sector
+        # 130,000 a turn holds about 16 sectors and a sweep sees only three or four drops.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, jump_turns=1.5, jump_overhead=25e6)
+        result = measure(drive, drive.clock, 130_000, 160_000, Settings(), silent_log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertEqual(result.record["status"], "measured")
+        self.assertEqual(result.record["warnings"], [])
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 130_000, 50, 599), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
+
+    def test_a_spindle_settling_at_the_start_of_a_pass_is_waited_for(self) -> None:
+        # Each pass starts with a seek from the last calibration, near the end, back to the start,
+        # and the disc turns up to 60% slower for the eight reads after it. Timed meanwhile, the
+        # first steps of every pass came out wrong the same way.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, settle_reads=8, settle_share=0.6)
+        result = measure(drive, drive.clock, 0, 200_000, Settings(), silent_log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertEqual(result.record["status"], "measured")
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 0, 50, 3999), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
+
+    def test_a_step_read_again_after_a_long_seek_waits_for_the_spindle(self) -> None:
+        # Sectors 1,000 and 1,050 fail through both passes and read again afterwards, so their
+        # steps are read again straight after the seek back from the end of the last pass.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, settle_reads=8, settle_share=0.6, failing=[1000, 1050])
+        started: list[str] = []
+
+        def log(message: str) -> None:
+            if message.startswith("DPM: pass 2"):
+                started.append(message)
+            elif started and message.startswith("DPM: 90% of the pass"):
+                drive.failing.clear()
+
+        result = measure(drive, drive.clock, 0, 200_000, Settings(), log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertGreater(result.record["statistics"]["remeasuredSteps"], 0)  # type: ignore[index]
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 0, 50, 3999), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
+
+    def test_steps_that_slide_a_turn_off_one_after_another_leave_the_turns_alone(self) -> None:
+        # The fractions of a pass whose first steps slide off by most of a turn, one after another,
+        # as a real drive's did while its spindle settled. Turns predicted from the steps before
+        # alone followed them a whole turn low and kept every later step there; the calibration
+        # holds the rest where it is.
+        measurement = dpmmeasure._Measurement(FakeDrive(FakeDisc()), lambda: 0, 0, 200_000, Settings(), silent_log)
+        measurement.calibrations = [dpmmeasure.Calibration(0, 31.5e6, 31.5e6 / 9.8), dpmmeasure.Calibration(200_000, 59e6, 59e6 / 18.2)]
+        points = list(range(0, 200_001, 50))
+        calibrated = [50 / measurement._period(lba).sectors_per_turn for lba in points[1:]]
+        fractions: list[float | None] = [t % 1.0 for t in calibrated]
+        for i, slide in enumerate((0.4, 0.6, 0.8, 0.85, 0.9, 0.9)):
+            fractions[i + 1] = (calibrated[i + 1] - slide) % 1.0
+        turns = measurement._unwrap(fractions, points)
+        self.assertEqual([round(t - c) for t, c in zip(turns[8:], calibrated[8:], strict=True)], [0] * (len(points) - 9))  # type: ignore[operator]
+
+    def test_a_drive_that_reaches_far_sectors_sooner_still_calibrates(self) -> None:
+        # The other way round: a slow turnaround of 40 ms, most of a turn out at sector 130,000,
+        # that is 25 ms shorter for sectors more than a turn ahead. The reads past that distance
+        # come a turn sooner, so in a sweep a drop comes only a few sectors after the one before.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, overhead=40e6, jump_turns=1.0, jump_overhead=-25e6)
+        result = measure(drive, drive.clock, 130_000, 160_000, Settings(), silent_log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertEqual(result.record["warnings"], [])
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 130_000, 50, 599), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
+
+    def test_a_refused_calibration_keeps_the_sweep_times(self) -> None:
+        result = run(FakeDrive(FakeDisc(), jitter=2e6, seed=3))
+        self.assertIsNone(result.dpm)
+        rejected = result.details["rejectedSweeps"]
+        self.assertGreater(len(rejected), 0)
+        self.assertEqual(len(rejected[0]["timesNs"]), 64)
+        self.assertIsInstance(rejected[0]["reason"], str)
+
+    def test_a_measurement_refused_after_its_passes_keeps_them(self) -> None:
+        result = run(FakeDrive(FakeDisc(), jitter=1e6, seed=3))
+        self.assertIn("the passes disagree", result.record["reason"])
+        details = result.details
+        self.assertEqual(len(details["points"]), 600)
+        self.assertEqual([len(p) for p in details["fractions"]], [599, 599])
+        self.assertEqual([len(p) for p in details["passes"]], [599, 599])
+        measured = [f for f in details["fractions"][0] if f is not None]
+        self.assertTrue(measured and all(0 <= f < 1 for f in measured))
 
     def test_a_drive_that_answers_from_its_cache_is_refused(self) -> None:
         result = run(FakeDrive(FakeDisc(), cache_ignores_fua=True))

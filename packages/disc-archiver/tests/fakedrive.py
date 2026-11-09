@@ -8,8 +8,11 @@ radius's distance from the start in track pitches, in turns.
 The drive turns the disc at constant linear velocity for the speed it was set to. A read takes a
 command overhead, waits for the sector's end to pass the head and reports after a latency, each
 with Gaussian jitter. Options make it answer from a cache despite Force Unit Access, fail reads,
-or answer some reads a turn late. ``toc`` and ``data`` are the table of contents and the user data
-of each sector it gives the check that it holds the dumped disc.
+answer some reads a turn late, or take longer (or, with a negative ``jump_overhead``, less long) to
+reach a sector more than ``jump_turns`` ahead, as a drive whose turnaround depends on the distance
+does. ``settle_reads`` reads after a seek of more than a centimetre find the disc turning up to
+``settle_share`` slower than it should, as a spindle still changing speed does. ``toc`` and ``data`` are the table of contents and the user data of each sector it gives the
+check that it holds the dumped disc.
 """
 
 from __future__ import annotations
@@ -63,6 +66,10 @@ class FakeDrive:
         read_ahead: int = 512,
         failing: Iterable[int] = (),
         late_share: float = 0.0,
+        jump_turns: float = 0.0,
+        jump_overhead: float = 0.0,
+        settle_reads: int = 0,
+        settle_share: float = 0.0,
         toc: Iterable[TocEntry] = (),
         data: Callable[[int], bytes] | None = None,
     ) -> None:
@@ -75,6 +82,11 @@ class FakeDrive:
         self.read_ahead = read_ahead
         self.failing = set(failing)
         self.late_share = late_share
+        self.jump_turns = jump_turns
+        self.jump_overhead = jump_overhead
+        self.settle_reads = settle_reads
+        self.settle_share = settle_share
+        self.settling = 0
         self.toc_entries = list(toc)
         self.data = data
         self.data_reads: list[int] = []
@@ -114,6 +126,13 @@ class FakeDrive:
         seek = 0.0
         if self.last is not None:
             seek = 40e6 * abs(self.disc.radius(lba) - self.disc.radius(self.last)) / 0.035
+            if self.jump_overhead and self.disc.angle(lba) - self.disc.angle(self.last) > self.jump_turns:
+                seek += self.jump_overhead
+            if self.settle_reads and abs(self.disc.radius(lba) - self.disc.radius(self.last)) > 0.01:
+                self.settling = self.settle_reads
+        if self.settling:
+            period *= 1 + self.settle_share * self.settling / self.settle_reads
+            self.settling -= 1
         self._advance(self.overhead + seek + abs(self._noise()), period)
         wait = (self.disc.angle(lba + 1) - self.phase) % 1.0
         if self.late_share and self.random.random() < self.late_share:
