@@ -423,7 +423,7 @@ public abstract class OriginalContentSource : IDisposable
             () => new RawDataTrackUserDataStream(bin.OpenBuffered(), dataSectors, sheet.DataTrackMode),
             ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin),
             openVolume: () => new RawDataTrackUserDataStream(
-                bin.OpenBuffered(), dataSectors, sheet.DataTrackMode, emptyForm2AsZeros: true));
+                bin.OpenBuffered(), dataSectors, sheet.DataTrackMode, emptyPaddingAsZeros: true));
     }
 
     /// <summary>

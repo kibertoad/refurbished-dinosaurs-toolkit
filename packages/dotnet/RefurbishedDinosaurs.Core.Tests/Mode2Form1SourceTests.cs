@@ -196,6 +196,66 @@ public sealed class Mode2Form1SourceTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task TheVolumeReadsAnEmptyMode2PaddingSectorOnAMode1TrackAsZeros()
+    {
+        var iso = OriginalContentSourceTests.BuildIso([3, 1]);
+        var image = CueBinSourceTests.ToRaw(iso);
+        MakeEmptyMode2(image, PaddingSector);
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(root, image, Mode1Cue);
+            using var source = OriginalContentSource.OpenCueBin(root);
+            Assert.Equal(iso, await ReadAllAsync(source.OpenVolume()));
+            Assert.Equal([3, 1], await ReadAllAsync(source.OpenRead("EI/TEST.BIN")));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task AFileCoveringAnEmptyMode2SectorOnAMode1TrackFailsTheReadButNotTheVolume()
+    {
+        var iso = OriginalContentSourceTests.BuildIso([0, 0]);
+        var image = CueBinSourceTests.ToRaw(iso);
+        MakeEmptyMode2(image, PayloadSector);
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(root, image, Mode1Cue);
+            using var source = OriginalContentSource.OpenCueBin(root);
+            Assert.Equal(iso, await ReadAllAsync(source.OpenVolume()));
+            await using var file = source.OpenRead("EI/TEST.BIN");
+            var failure = await Assert.ThrowsAsync<InvalidDataException>(
+                () => file.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken));
+            Assert.Contains($"Sector {PayloadSector} is mode 2, but the cue sheet declares MODE1/2352.", failure.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    // The first byte after the header, the last of the 2048 MODE1 user data bytes, and the last byte.
+    [InlineData(16)]
+    [InlineData(16 + CookedSector - 1)]
+    [InlineData(RawSector - 1)]
+    public async Task AMode2SectorWithAnyNonzeroByteOnAMode1TrackFailsTheVolume(int dataByte)
+    {
+        var image = CueBinSourceTests.ToRaw(OriginalContentSourceTests.BuildIso([1]));
+        MakeEmptyMode2(image, PaddingSector);
+        image[PaddingSector * RawSector + dataByte] = 0x5A;
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(root, image, Mode1Cue);
+            using var source = OriginalContentSource.OpenCueBin(root);
+            await using var volume = source.OpenVolume();
+            var failure = await Assert.ThrowsAsync<InvalidDataException>(
+                () => volume.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken));
+            Assert.Contains($"Sector {PaddingSector} is mode 2, but the cue sheet declares MODE1/2352.", failure.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Theory]
     // The first data byte, the last of the 2048 a Form 1 sector would hold, and one of the 276 after them.
     [InlineData(24)]
@@ -472,6 +532,15 @@ public sealed class Mode2Form1SourceTests
         sector[16..].Clear();
         sector[18] = Form2Submode;
         sector[22] = Form2Submode;
+    }
+
+    // Rewrites a sector as an empty mode 2 sector: mode byte 2 and all 2336 bytes after the header
+    // zero, as some mastering programs leave for padding inside a MODE1 volume.
+    private static void MakeEmptyMode2(byte[] image, int lba)
+    {
+        var sector = image.AsSpan(lba * RawSector, RawSector);
+        sector[15] = 2;
+        sector[16..].Clear();
     }
 
     private static void Damage(byte[] image, int lba, string damage)

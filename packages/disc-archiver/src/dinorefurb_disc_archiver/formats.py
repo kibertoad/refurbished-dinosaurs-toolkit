@@ -412,7 +412,7 @@ def _first_non_data_past_volume(track: Track, volume: isofs.Volume | None) -> No
     for chunk in track.iter_raw(volume_end, track.length):
         for offset in range(0, len(chunk), RAW_SECTOR):
             try:
-                block_data(chunk[offset : offset + RAW_SECTOR], track.mode, track.index1 + index)
+                block_data(chunk[offset : offset + RAW_SECTOR], track.mode, track.index1 + index, empty_mode2=False)
             except NotDataSector as error:
                 return error
             index += 1
@@ -451,10 +451,16 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
             # not match its sheet, which the error names. No partial ISO is left behind.
             path.unlink(missing_ok=True)
             raise
-        if empty:
+        if empty and track.mode == "MODE2":
             notes.append(
                 f"Track {track.number} has empty MODE2 form 2 sectors at {describe_ranges(empty)} (counted from INDEX 01). "
                 "The ISO holds each as 2,048 zero bytes and does not record that it was form 2; BIN/CUE, CloneCD and CHD "
+                "keep the raw sectors."
+            )
+        elif empty:
+            notes.append(
+                f"Track {track.number} is MODE1 but has empty mode 2 sectors at {describe_ranges(empty)} (counted from INDEX 01). "
+                "The ISO holds each as 2,048 zero bytes and does not record that it was mode 2; BIN/CUE, CloneCD and CHD "
                 "keep the raw sectors."
             )
     if track.mode == "MODE2":

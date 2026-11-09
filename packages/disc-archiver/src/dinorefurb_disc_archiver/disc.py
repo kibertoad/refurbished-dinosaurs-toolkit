@@ -215,9 +215,11 @@ class Track:
     def iter_user_data(self, empty_form2: list[list[int]] | None = None) -> Iterator[bytes]:
         """Yield the 2,048-byte user data of every sector from INDEX 01, checking each header.
 
-        Given a list, an empty MODE2 form 2 sector (see :func:`is_empty_form2`) reads as 2,048
-        zero bytes, and the sectors read that way are appended to the list as ``[first, stop)``
-        ranges counted from INDEX 01. Without one, such a sector raises :class:`NotDataSector`.
+        Given a list, an empty padding sector reads as 2,048 zero bytes, and the sectors read that
+        way are appended to the list as ``[first, stop)`` ranges counted from INDEX 01: an empty
+        MODE2 form 2 sector (see :func:`is_empty_form2`) on a MODE2 track, an empty mode 2 sector
+        (see :func:`is_empty_mode2`) on a MODE1 track. Without one, such a sector raises
+        :class:`NotDataSector`.
         """
         if self.is_audio:
             raise DiscError(f"track {self.number} is audio and has no user data")
@@ -312,17 +314,35 @@ def is_empty_form2(sector: memoryview | bytes) -> bool:
     )
 
 
-def block_data(sector: memoryview | bytes, mode: str, lba: int) -> tuple[bytes, bool]:
-    """The 2,048 bytes a raw sector gives an ISO file, and whether it is an empty form 2 sector.
+_EMPTY_MODE2_DATA = bytes(RAW_SECTOR - 16)
+
+
+def is_empty_mode2(sector: memoryview | bytes) -> bool:
+    """Whether a raw sector is an empty mode 2 sector: the data sync pattern, mode 2, and all
+    2,336 bytes after the header zero.
+
+    Some mastering programs leave such sectors as padding inside the volume space of a MODE1
+    track. Read as mode 2 formless or as CD-ROM XA form 1, the sector holds only zeros, and it
+    has no EDC or ECC to check.
+    """
+    return bytes(sector[:12]) == SYNC and sector[15] == 2 and bytes(sector[16:RAW_SECTOR]) == _EMPTY_MODE2_DATA
+
+
+def block_data(sector: memoryview | bytes, mode: str, lba: int, empty_mode2: bool = True) -> tuple[bytes, bool]:
+    """The 2,048 bytes a raw sector gives an ISO file, and whether it is an empty padding sector.
 
     A sector with user data gives that user data (:func:`user_data`). An empty MODE2 form 2 sector
-    on a MODE2 track gives 2,048 zero bytes, the block a MODE1 image of the same disc holds there
-    and the bytes the toolkit's ``OriginalContentSource.OpenVolume`` reads for it. Any other sector
-    raises :class:`NotDataSector`.
+    on a MODE2 track, and an empty mode 2 sector (:func:`is_empty_mode2`) on a MODE1 track, give
+    2,048 zero bytes: the block a MODE1 image of the same disc holds there and the bytes the
+    toolkit's ``OriginalContentSource.OpenVolume`` reads for it. Any other sector raises
+    :class:`NotDataSector`. ``empty_mode2`` False refuses an empty mode 2 sector as well: past the
+    ISO 9660 volume, where such a sector holds no user data of the track's mode and is kept raw.
     """
     try:
         return user_data(sector, mode, lba), False
     except NotDataSector:
+        if empty_mode2 and mode == "MODE1" and is_empty_mode2(sector):
+            return bytes(COOKED_SECTOR), True
         # Only a mode 2 sector with its sync pattern and equal subheader copies gets here for its
         # form 2 bit.
         if mode != "MODE2" or bytes(sector[:12]) != SYNC or sector[15] != 2 or bytes(sector[16:20]) != bytes(sector[20:24]):

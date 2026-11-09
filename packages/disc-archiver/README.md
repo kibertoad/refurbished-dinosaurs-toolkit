@@ -403,6 +403,15 @@ My Game/
   sector of either form whose two subheader copies differ, holds no user data. A file whose extent covers an empty form 2
   sector is not read: the `files` and `game-dir` formats, or a profile that lists expected paths (whose check
   reads the files), stops the run with its sector number before any format is written.
+  Some mastering programs leave a different padding sector inside the volume of a MODE1 track: a
+  mode 2 sector whose 2,336 bytes after the header are all zero. Inside the declared volume it is
+  read the same way, as 2,048 zero bytes, and `data.emptyMode2Sectors` lists those sectors (`[]`
+  when there are none; a manifest written before the field existed is read as having none). An
+  ISO holds them as zero blocks and its verification lists which sectors they were as not
+  compared. A mode 2 sector with any nonzero byte after the header holds no user data of the
+  track's mode, and a file whose extent covers an empty mode 2 sector is not read, as for an
+  empty form 2 sector. Past the declared volume such a sector is one of the sectors without user
+  data below, as it was before the field existed.
   A raw data track can run on past the ISO 9660 volume its primary volume descriptor declares,
   and some discs hold sectors there with no user data: no sync pattern, another mode, a form 2
   sector that carries data, or subheader copies that differ.
