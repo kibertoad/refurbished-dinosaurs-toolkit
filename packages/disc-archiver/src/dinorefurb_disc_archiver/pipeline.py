@@ -162,17 +162,17 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
         view = memoryview(chunk)
         for offset in range(0, len(chunk), RAW_SECTOR):
             sector = view[offset : offset + RAW_SECTOR]
+            inside = volume_end is None or index < volume_end
             try:
-                inside = volume_end is None or index < volume_end
-                data, empty_form2 = block_data(sector, track.mode, track.index1 + index, empty_mode2=inside)
+                data, padding = block_data(sector, track.mode, track.index1 + index, empty_mode2=inside)
             except NotDataSector:
-                if volume_end is None or index < volume_end:
+                if inside:
                     raise
                 raw.write(sector)
                 add_to_ranges(ranges, index)
             else:
                 user.write(data)
-                if empty_form2:
+                if padding:
                     add_to_ranges(empty, index)
             index += 1
     return {
@@ -341,6 +341,14 @@ class Verification:
         }
 
 
+# The manifest's lists of empty padding sectors read as zero blocks: the key, what the sectors
+# are, and the shorter name a difference gives.
+_PADDING_LISTS = (
+    ("emptyForm2Sectors", "empty MODE2 form 2 sectors", "empty form 2 sectors"),
+    ("emptyMode2Sectors", "empty mode 2 sectors on the MODE1 track", "empty mode 2 sectors"),
+)
+
+
 def _compare(reference: dict, found: dict, result: Verification, layout: bool, audio: bool, form2: bool = True) -> None:  # type: ignore[type-arg]
     """Compare a copy's fingerprint with the source's. ``form2`` is False for a copy whose data
     track is an ISO file, which holds an empty form 2 or mode 2 sector as a zero block and cannot
@@ -351,28 +359,19 @@ def _compare(reference: dict, found: dict, result: Verification, layout: bool, a
         result.compared.append("data track user data")
         if theirs is None or theirs["sha256"] != mine["sha256"]:
             result.differences.append("the data track's user data differs from the source")
-        if not form2:
-            if mine["emptyForm2Sectors"]:
-                result.not_compared.append(
-                    "which data track sectors are empty MODE2 form 2 sectors (in the source, "
-                    f"{describe_ranges(mine['emptyForm2Sectors'])} counted from INDEX 01), which an ISO holds as zero blocks"
-                )
-        elif mine["emptyForm2Sectors"] or (theirs is not None and theirs["emptyForm2Sectors"]):
-            result.compared.append("which data track sectors are empty MODE2 form 2 sectors")
-            if theirs is not None and theirs["emptyForm2Sectors"] != mine["emptyForm2Sectors"]:
-                result.differences.append("the data track's empty form 2 sectors differ from the source")
-        mine_mode2 = mine.get("emptyMode2Sectors", [])
-        theirs_mode2 = None if theirs is None else theirs.get("emptyMode2Sectors", [])
-        if not form2:
-            if mine_mode2:
-                result.not_compared.append(
-                    "which data track sectors are empty mode 2 sectors on the MODE1 track (in the source, "
-                    f"{describe_ranges(mine_mode2)} counted from INDEX 01), which an ISO holds as zero blocks"
-                )
-        elif mine_mode2 or theirs_mode2:
-            result.compared.append("which data track sectors are empty mode 2 sectors on the MODE1 track")
-            if theirs_mode2 is not None and theirs_mode2 != mine_mode2:
-                result.differences.append("the data track's empty mode 2 sectors differ from the source")
+        for key, kind, short in _PADDING_LISTS:
+            listed = mine.get(key, [])
+            copied = None if theirs is None else theirs.get(key, [])
+            if not form2:
+                if listed:
+                    result.not_compared.append(
+                        f"which data track sectors are {kind} (in the source, "
+                        f"{describe_ranges(listed)} counted from INDEX 01), which an ISO holds as zero blocks"
+                    )
+            elif listed or copied:
+                result.compared.append(f"which data track sectors are {kind}")
+                if copied is not None and copied != listed:
+                    result.differences.append(f"the data track's {short} differ from the source")
         if mine["nonDataSectors"] or (theirs is not None and theirs["nonDataSectors"]):
             result.compared.append("raw sectors past the ISO 9660 volume that hold no user data")
         if theirs is not None and (theirs["nonDataSectors"], theirs["nonDataSha256"]) != (mine["nonDataSectors"], mine["nonDataSha256"]):

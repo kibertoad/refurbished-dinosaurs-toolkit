@@ -736,6 +736,19 @@ class EmptyMode2Tests(FormatTestCase):
             with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is mode 2, not the MODE1"):
                 fingerprint(self.disc_with(bytes(sector)))
 
+    def test_past_the_volume_it_stays_a_sector_without_user_data_and_no_iso_is_written(self) -> None:
+        volume = len(self.synthetic.iso) // 2048
+        padding = mode1_sector(volume, b"", mode=2)
+        (self.source / "Synth (Track 1).bin").write_bytes(self.synthetic.data_raw + padding)
+        disc = read_cue(self.sheet)
+        data = fingerprint(disc)["data"]
+        self.assertEqual(data["emptyMode2Sectors"], [])  # type: ignore[index]
+        self.assertEqual(data["nonDataSectors"], [[volume, volume + 1]])  # type: ignore[index]
+        self.assertEqual(data["nonDataSha256"], hashlib.sha256(padding).hexdigest())  # type: ignore[index]
+        with self.assertRaisesRegex(FormatUnavailable, f"sector {volume} is mode 2, not the MODE1"):
+            self.write("iso", disc)
+        self.assertEqual(list((self.dir / "iso").glob("*.iso")), [])
+
     def test_a_file_on_an_empty_mode2_sector_stops_the_run_before_any_format(self) -> None:
         iso = bytearray(iso_image(joliet=False))
         record = iso.index(b"README.TXT;1") - 33

@@ -52,7 +52,8 @@ LegacyFormats parts of it:
   declares ([Cue/bin data tracks](../packages/dotnet/README.md#cuebin-data-tracks)).
   `OpenVolume` and the descriptor and directory reads while opening also read a Form 2 sector
   whose 2324 data bytes are all zero as 2048 zero bytes, so a disc with empty Form 2 padding in its
-  volume space, even inside a directory's extent, opens and can pin `VolumeXxh3`. A cue/bin source
+  volume space, even inside a directory's extent, opens and can pin `VolumeXxh3`.
+  On a `MODE1/2352` track they read a mode 2 sector whose 2336 bytes after the header are all zero the same way, padding some mastering programs leave inside a MODE1 volume. A cue/bin source
   names the cue sheet and the raw image file it chose from a directory, a sheet or a `.bin` input as
   `CuePath` and `BinPath` (a sheet input may have any extension, and the image is the file the
   sheet's first `FILE` names, whatever its extension), so the importer hashes and reads the same

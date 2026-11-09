@@ -239,7 +239,7 @@ public abstract class OriginalContentSource : IDisposable
     /// The disc must be one session whose first track holds the data, starting at sector 0, followed
     /// only by audio tracks, as for <see cref="OpenCueBin"/>. A raw data track is checked sector by
     /// sector as <see cref="OpenCueBin"/> checks a <c>MODE1/2352</c> or <c>MODE2/2352</c> track, with
-    /// the same reading of empty Form 2 sectors as zeros for <see cref="OpenVolume"/>; a data track
+    /// the same reading of empty padding sectors as zeros for <see cref="OpenVolume"/>; a data track
     /// stored as 2048-byte user data is read as <see cref="OpenIso9660(string)"/> reads an image. The
     /// volume is checked as <see cref="OpenIso9660(string)"/> describes, so every form of one disc
     /// gives the same <see cref="Files"/>, <see cref="Label"/>, <see cref="VolumeBlocks"/> and
@@ -394,12 +394,14 @@ public abstract class OriginalContentSource : IDisposable
     /// as interleaved audio or video, throws <see cref="InvalidDataException"/> naming the sector when
     /// it is read: while opening for the descriptors and directories, and from the stream
     /// <see cref="OpenRead"/> or <see cref="OpenVolume"/> returns for a file's or the volume's sectors.
-    /// The one exception is a Form 2 sector whose 2324 data bytes are all zero, such as padding a
-    /// CD-XA master leaves inside the volume space: <see cref="OpenVolume"/>, and the reads of the
-    /// descriptors and directories while opening, read it as 2048 zero bytes, as a MODE1 image of the
-    /// disc holds there, while <see cref="OpenRead"/> still throws when a file covers it. Such a sector
-    /// inside a directory's extent holds no records, and one where a volume descriptor is expected
-    /// fails as an invalid descriptor.
+    /// The exceptions are empty padding sectors: on a <c>MODE2/2352</c> track a Form 2 sector whose
+    /// 2324 data bytes are all zero, such as padding a CD-XA master leaves inside the volume space,
+    /// and on a <c>MODE1/2352</c> track a mode 2 sector whose 2336 bytes after the header are all
+    /// zero, which some mastering programs leave inside a MODE1 volume. <see cref="OpenVolume"/>, and
+    /// the reads of the descriptors and directories while opening, read either as 2048 zero bytes, as
+    /// a MODE1 image of the disc holds there, while <see cref="OpenRead"/> still throws when a file
+    /// covers one. Such a sector inside a directory's extent holds no records, and one where a volume
+    /// descriptor is expected fails as an invalid descriptor.
     /// The EDC, the ECC and the address in each sector's header are not checked.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
