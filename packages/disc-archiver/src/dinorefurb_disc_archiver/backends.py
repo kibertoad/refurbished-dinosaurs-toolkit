@@ -180,7 +180,12 @@ def _recover(
     more, slowly (``REFINE_SPEED``, ``REFINE_RETRIES``), with the drive's sector order given
     explicitly, since ``--auto-detect`` acts in the disc command only. Then ``redumper split``
     writes the image, with ``--force-split`` while bad sectors remain: it regenerates them from
-    their data, as Redump's dumps of such discs hold them. Returns the ``dataErrors`` record:
+    their data, as Redump's dumps of such discs hold them. ``redumper hash`` and ``redumper info``
+    then run on the image with the same ``extra`` options, the steps the disc command ends with
+    when it does not stop on data errors, so the analysis holds what the info step finds, the
+    SecuROM scheme among it, whether or not the first read had errors. They read only the image;
+    when one fails, the rip goes on without it and the analysis lacks what it logs. Returns the
+    ``dataErrors`` record:
     ``sectorsBefore``, ``refined``, ``sectors`` left, ``edcFailing`` among them, their ``ranges``,
     the ``files`` holding them (null when the file system could not be read) and the ``outcome``
     (see ``dataerrors.outcome``).
@@ -214,6 +219,11 @@ def _recover(
     else:
         log(f"That is more than {dataerrors.REFINE_MAX_SECTORS}, so they are not read again.")
     tools.run([program, "split", *image, *extra, *(["--force-split"] if facts.sectors else [])], log, cwd=directory)
+    for step in ("hash", "info"):
+        try:
+            tools.run([program, step, *image, *extra], log, cwd=directory)
+        except DiscError as error:
+            log(f"redumper {step} failed on the image ({error}), so the disc analysis lacks what it finds.")
     result = dataerrors.outcome(before, facts)
     _log_outcome(log, result, facts)
     return {
@@ -380,6 +390,8 @@ _REDUMPER_INFO_REDUMP_ERRORS = re.compile(r"^  REDUMP\.INFO errors: (\d+)", re.M
 _REDUMPER_INFO_RANGE = re.compile(r"(-?\d+)(?:-(-?\d+))?")
 # The SecuROM system (``systems/securom.ixx``) logs its scheme, 1 to 4 or "unknown".
 _REDUMPER_INFO_SCHEME = re.compile(r"^  scheme: (\S+)", re.MULTILINE)
+# The line redumper (``redumper.ixx``) logs when a command stops on an exception.
+_REDUMPER_ERROR = re.compile(r"^error: ", re.MULTILINE)
 # The steps whose warnings ``redumper_disc_analysis`` keeps: those after the dump.
 _REDUMPER_ANALYSIS_STEPS = ("PROTECTION", "REFINE", "SPLIT", "HASH", "INFO")
 
@@ -433,8 +445,8 @@ def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
     ``source.discAnalysis``.
 
     The log is read from the last run that dumped from a drive (see :func:`redumper_last_run`) to
-    its end, so the ``refine`` and ``split`` runs the archiver adds after data errors count too.
-    Where a step ran more than once, its last run counts. The keys:
+    its end, so the ``refine``, ``split``, ``hash`` and ``info`` runs the archiver adds after data
+    errors count too. Where a step ran more than once, its last run counts. The keys:
 
     - ``protections``: what the protection step found, ``[]`` for redumper's "protection: none".
     - ``writeOffset``: the disc write offset in samples, from split.
@@ -455,8 +467,9 @@ def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
       the ``warning:`` prefix, each once, in order.
 
     A key is None when the steps that log it did not run or did not log it: ``dataTracks`` and
-    ``protectionSchemes`` without an info step, as after data errors, where the hash and info
-    steps are not run. Returns None when no run dumped from a drive.
+    ``protectionSchemes`` without an info step, or when the last info step logged an error and
+    stopped, as when ``redumper info`` fails on the image after data errors: what it logged before
+    the error is not a complete list. Returns None when no run dumped from a drive.
     """
     runs = dataerrors.runs(log_text)
     dumped = [i for i, run in enumerate(runs) if _redumper_dumped(run)]
@@ -491,7 +504,9 @@ def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
             universal = hashes[-1]
     after_dump = "".join(body for step, body in steps if step in _REDUMPER_ANALYSIS_STEPS)
     shift = _REDUMPER_SUBCHANNEL_SHIFT.findall(after_dump)
-    tracks, schemes = _redumper_info(info) if info is not None else (None, None)
+    # A failed step logs its header, then the error redumper stopped on: what it found is partial.
+    completed = info is not None and not _REDUMPER_ERROR.search(info)
+    tracks, schemes = _redumper_info(info) if completed else (None, None)
     return {
         "protections": protections,
         "writeOffset": write_offset,
