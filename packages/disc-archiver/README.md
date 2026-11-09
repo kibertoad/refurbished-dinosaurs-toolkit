@@ -300,12 +300,25 @@ match the DAT's. The comparison and its outcome are
 in the manifest's `redump` (in `check`'s output, its `redump`).
 
 Each track file is matched with a DAT file by size, CRC32, MD5 and SHA-1, all four agreeing; file
-names are reported separately. The outcome is:
+names are reported separately.
+
+The cue sheet is compared the same way, but a few of its lines say nothing about the disc's bytes,
+so it also matches when it equals the DAT's after changing only those. `cueSheetChanges` lists what
+had to change, and is `[]` for a sheet that equals the DAT's as it is:
+
+- `FILE names`: the `FILE` lines get the DAT's track names. Redump names files
+  `<game> (Track N).bin` after its entry; the archiver names them after `--name`.
+- `line endings`: CRLF instead of LF or the other way round. A sheet redumper wrote outside Windows
+  ends its lines with LF.
+- `an all-zero CATALOG line`: `CATALOG 0000000000000` added or removed. A disc without a media
+  catalog number has thirteen zeros on some drives and no catalog at all on others.
+
+The outcome is:
 
 | `status` | Means | Exit code |
 |---|---|---|
 | `matched` | Every track file and the cue sheet match one game's files, and the game lists no other file. | `0` |
-| `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings (a sheet redumper wrote outside Windows ends lines with LF), or its content differs. | `0` |
+| `partial` | Every track file matches one game, which lists no other track, but the cue sheet's content differs from the DAT's beyond what `cueSheetChanges` covers, or the DAT lists no cue sheet. `differences` says which. | `0` |
 | `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. `candidates` names the games nearest by track size. | `0` |
 | `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. The DAT cannot tell a bad dump from an edition it does not list that shares some of the game's tracks; dumping again and comparing tells them apart. | `3` |
 | `notCompared` | `bincue-split` could not be written from this source (an ISO has no raw sectors). | `0` |
@@ -490,7 +503,8 @@ My Game/
   see [Comparing with a Redump DAT](#comparing-with-a-redump-dat)), the game the track files match
   best (`game`, `null` when none), each file of the `bincue-split` copy with its `kind`
   (`cueSheet` or `track`), whether it `matched` and the DAT's name for it (`datName`), the files
-  whose name differs from the DAT's (`nameDifferences`), what differed (`differences`), and for
+  whose name differs from the DAT's (`nameDifferences`), what the cue sheet matched after
+  (`cueSheetChanges`), what differed (`differences`), and for
   `notListed` and `mismatched` the games nearest by track size (`candidates`, see
   [When the DAT does not list the disc](#when-the-dat-does-not-list-the-disc)).
 

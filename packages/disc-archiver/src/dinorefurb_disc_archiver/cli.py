@@ -227,6 +227,8 @@ def _report_redump(report: dict | None) -> None:  # type: ignore[type-arg]
     print(f"redump: {report['status']}{game} in {report['dat']}")
     for item in report["nameDifferences"]:
         print(f"  name: {item['path']} is {item['datName']!r} in the DAT")
+    if report.get("cueSheetChanges"):
+        print(f"  cue sheet: equals the DAT's after changing its {', '.join(report['cueSheetChanges'])}")
     for difference in report["differences"]:
         print(f"  {difference}")
     if nearest := redump.candidates_summary(report):
