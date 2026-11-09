@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import dataerrors, redumper, tools
+from .ccd import crc16
 from .disc import COOKED_SECTOR, DiscError
 from .tools import Log
 
@@ -453,12 +454,7 @@ def _redumper_info(info: str) -> tuple[list[dict[str, object]], list[dict[str, o
 def q_crc(q: bytes) -> int:
     """The CRC of the first 10 bytes of a subchannel Q: CRC-16 with polynomial 0x1021 and initial
     value 0, inverted, as a CD stores it."""
-    crc = 0
-    for byte in q:
-        crc ^= byte << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
-    return crc ^ 0xFFFF
+    return crc16(q) ^ 0xFFFF
 
 
 def _bcd_frames(minutes: str, seconds: str, frames: str) -> int | None:

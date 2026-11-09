@@ -84,7 +84,7 @@ After the dump, `rip` measures them itself when `--dpm` says so
 
 | `--dpm` | Measures |
 |---|---|
-| `auto` (the default) | when redumper's info step finds SecuROM scheme 4 (the 10-mark layout of SecuROM 4.8 and later) or marks of an `unknown` scheme. An unknown scheme whose listed sectors are all out of step (see `protectionSchemes` in [the output folder](#the-output-folder)) still triggers, since an out-of-step subchannel hides the marks, and the trigger says so |
+| `auto` (the default) | when redumper's info step finds SecuROM scheme 4 (the 10-mark layout of SecuROM 4.8 and later) or marks of an `unknown` scheme. An unknown scheme with more than 50 listed sectors out of step (see `protectionSchemes` in [the output folder](#the-output-folder)) still triggers, since an out-of-step subchannel hides the marks, and the trigger says so |
 | `always` | every disc; for StarForce, ProtectCD and CD-Cops, which redumper does not detect |
 | `never` | no disc. A trigger it skips is recorded, so the manifest says the copy lacks the data |
 

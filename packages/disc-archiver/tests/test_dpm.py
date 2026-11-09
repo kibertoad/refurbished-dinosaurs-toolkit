@@ -179,9 +179,14 @@ class TriggerTests(unittest.TestCase):
         found = dpm.trigger(self.analysis("unknown", entries)) or ""
         self.assertIn("subchannel ran out of step with its data in 60 sectors", found)
         self.assertIn("cannot be ruled out", found)
-        # With a mark among them, the marks are what made it unknown.
+        # A Q that fails its CRC among them, a mark or a read error, does not change that.
         found = dpm.trigger(self.analysis("unknown", (*entries, securom_entry(5_000, mark=True)))) or ""
+        self.assertIn("out of step with its data in 60 sectors", found)
+        # A few sectors out of step beside marks leave the marks as the reason, as the rip warns of none.
+        few = (*entries[:3], securom_entry(5_000, mark=True))
+        found = dpm.trigger(self.analysis("unknown", few)) or ""
         self.assertIn("unknown scheme", found)
+        self.assertNotIn("out of step", found)
 
     def test_a_rip_warns_of_a_subchannel_out_of_step(self) -> None:
         lines: list[str] = []

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pycdlib
 
-from dinorefurb_disc_archiver.disc import MSF_OFFSET, SYNC, bcd, msf
+from dinorefurb_disc_archiver.disc import MSF_OFFSET, SYNC, bcd, format_msf, msf
 
 FILES = {
     "README.TXT": b"synthetic test volume\r\n",
@@ -486,22 +486,18 @@ def _q_crc(q: bytes) -> int:
     return (value & 0xFFFF) ^ 0xFFFF
 
 
-def _bcd_msf(frames: int) -> str:
-    return "{:02d}:{:02d}:{:02d}".format(*msf(frames))
-
-
 def securom_entry(position: int, held: int | None = None, mark: bool = False) -> str:
     """A line of redumper's SecuROM list (``systems/securom.ixx``): the sector ``position`` frames
     from 00:00:00 holding the Q of the sector ``held`` (itself by default) in track 1. ``mark``
     flips a bit of its relative minutes after the CRC was taken, as a SecuROM mark has it."""
     held = position if held is None else held
-    q = bytearray.fromhex("410101" + (_bcd_msf(held - 150) + "00" + _bcd_msf(held)).replace(":", ""))
+    q = bytearray.fromhex("410101" + (format_msf(held - 150) + "00" + format_msf(held)).replace(":", ""))
     crc = _q_crc(bytes(q))
     if mark:
         q[3] ^= 0x20
     shown = q.hex().upper()
     fields = [shown[0:6], ":".join((shown[6:8], shown[8:10], shown[10:12])), shown[12:14], ":".join((shown[14:16], shown[16:18], shown[18:20]))]
-    return f"MSF: {_bcd_msf(position)} Q-Data: {' '.join(fields)} {crc:04X}"
+    return f"MSF: {format_msf(position)} Q-Data: {' '.join(fields)} {crc:04X}"
 
 
 # redumper's CD dump files start at this LBA, the start of the lead-in, with 588 samples per

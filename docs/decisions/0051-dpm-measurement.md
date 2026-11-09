@@ -52,7 +52,8 @@ established dumper the archiver runs can measure DPM.
    4 or `unknown`. A drive whose subchannel runs out of step with its data lists thousands of
    sectors holding a neighbour's sound Q and none of the marks, so redumper calls the scheme
    `unknown`. The trigger still fires then, since the marks are hidden rather than absent, and
-   its reason says the subchannel was out of step. `always` measures any disc, for the
+   when more than 50 listed sectors are out of step (the count at which the rip warns), its
+   reason says the subchannel was out of step. `always` measures any disc, for the
    protections redumper does not detect; `never` skips it and records that a trigger was skipped. The copy goes on whatever the
    measurement's outcome.
 5. Storage: the measurement and its details in `archival/<name>.dpm.json` beside the dump, the
