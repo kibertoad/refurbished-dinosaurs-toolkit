@@ -151,6 +151,23 @@ class BlockTests(unittest.TestCase):
         found = verify_output(output, self.disc, fingerprint(self.disc), self.dir, silent_log)
         self.assertIn("the DPM data differs from the source", found.differences)
 
+    def test_the_note_on_a_split_copys_descriptor_names_what_only_the_cue_sheet_keeps(self) -> None:
+        self.disc.dpm = SAMPLE
+        self.disc.tracks[1].isrc = "USABC9900001"
+        output = pipeline.write_format("bincue-split", self.disc, self.dir / "split", "Synth", silent_log)
+        (note,) = [n for n in output.notes if "Synth.mds" in n]
+        self.assertIn("the tracks' ISRC codes", note)
+
+    def test_a_split_copy_of_several_sessions_says_no_copy_holds_the_dpm(self) -> None:
+        data, music = self.disc.tracks
+        disc = Disc([replace(data), replace(music, session=2)], dpm=SAMPLE)
+        manifest = derive(disc, self.dir / "out", "Synth", ["bincue-split"], BUILTIN_PROFILES["any"], silent_log, {})
+        (output,) = manifest["outputs"]
+        self.assertFalse(any(f["path"].endswith(".mds") for f in output["files"]))
+        self.assertTrue(any("no .mds descriptor was written" in note for note in output["notes"]))
+        self.assertFalse(any("The mds copy holds it" in note for note in output["notes"]))
+        self.assertTrue(any("No copy holds it" in note for note in output["notes"]))
+
     def test_without_dpm_a_split_copy_has_no_descriptor(self) -> None:
         output = pipeline.write_format("bincue-split", self.disc, self.dir / "split", "Synth", silent_log)
         self.assertFalse(any(f.suffix == ".mds" for f in output.files))

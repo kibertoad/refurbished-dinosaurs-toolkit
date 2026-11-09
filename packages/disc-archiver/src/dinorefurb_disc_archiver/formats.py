@@ -180,6 +180,14 @@ class Output:
     # track, ``size`` and ``xxh3``.
     listing: list[dict[str, object]] = field(default_factory=list)
 
+    @property
+    def descriptor(self) -> Path | None:
+        """The ``.mds`` descriptor a ``bincue-split`` copy of a disc with DPM data holds beside its
+        cue sheet, or None."""
+        if self.format != "bincue-split":
+            return None
+        return next((f for f in self.files if f.suffix.lower() == ".mds"), None)
+
 
 def track_file_name(name: str, disc: Disc, track: Track, extension: str) -> str:
     """The Redump file name of one track: ``name (Track 02).bin``, two digits from ten tracks on."""
@@ -271,25 +279,28 @@ def _cue_type(track: Track) -> str:
 def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
     """One .bin per track, each holding its pregap, and a cue sheet naming them."""
     _need_raw(disc, "BIN/CUE")
-    files, cue_files = [], []
+    files, cue_files, placements = [], [], []
     for track in disc.tracks:
         filename = f"{name}.bin" if len(disc.tracks) == 1 else track_file_name(name, disc, track, ".bin")
         stored = track.pregap_writable
         _write(directory / filename, track.iter_raw(-track.pregap if stored else 0, track.length))
         files.append(directory / filename)
         cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
+        # Where the track's INDEX 01 sits in its file, for the descriptor below.
+        placements.append((filename, track.pregap * RAW_SECTOR if stored else 0))
     sheet = directory / f"{name}.cue"
     write_cue(sheet, render_cue(disc, cue_files))
     notes = [*_virtual_pregap_notes(disc), *_cue_gap_notes(disc)]
     written = [sheet, *files]
     if disc.dpm is not None:
-        if disc.tracks[-1].session == 1:
-            placements = [(f.name, t.pregap * RAW_SECTOR if t.pregap_writable else 0) for f, t in zip(files, disc.tracks, strict=True)]
+        if len(disc.sessions) == 1:
             written.append(mds.write_descriptor(disc, directory / f"{name}.mds", placements))
+            losses = metadata_losses(disc, "mds")
             notes.append(
                 f"{name}.mds is an Alcohol 120% descriptor of the same .bin files that holds the DPM data (where the "
                 "sectors lie on the disc), which a cue sheet has no place for. Open it instead of the cue sheet in a "
                 "reader that times reads by DPM, such as rust-dos or CDEmu."
+                + (f" The cue sheet keeps what the descriptor does not hold: {'; '.join(losses)}." if losses else "")
             )
         else:
             notes.append(

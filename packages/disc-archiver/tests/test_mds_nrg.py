@@ -317,6 +317,8 @@ class HandBuiltMdsTests(ImageTestCase):
             ([tracks[0], {**tracks[1], "offset": 3 * RAW_SECTOR}, tracks[2]], "neither starts the file"),
             ([tracks[0], tracks[1], {**tracks[2], "file": "Hand 4.bin"}], "Hand 4.bin does not exist"),
             ([*tracks[:2], {**tracks[2], "length": tracks[2]["length"] + 1}], "track 3 runs past the end of Hand 3.bin"),
+            # Back in track 1's file, track 3 has to follow track 1's sectors, not overlap them.
+            ([*tracks[:2], {**tracks[2], "file": "Hand 1.bin"}], "neither follows track 1's sectors"),
         ]
         for blocks, message in cases:
             with self.subTest(message=message):

@@ -201,6 +201,9 @@ def _tracks(path: Path, images: dict[str, Path], blocks: list[_Block]) -> list[T
         raise DiscError(f"{path.name}: track 1 has a {blocks[0].pregap}-sector pregap; at most the 150 sectors before LBA 0 are read")
     lengths = [b.length for b in blocks]
     stored = [False] * len(blocks)
+    # Each file's last track so far and where its sectors end. A track in a file no earlier track
+    # used starts at the file's start (track 0 below), its pregap ahead of it or not.
+    ends: dict[str, tuple[int, int]] = {}
     for i in range(1, len(blocks)):
         previous, block = blocks[i - 1], blocks[i]
         if block.start == previous.start + previous.length + block.pregap:
@@ -215,15 +218,14 @@ def _tracks(path: Path, images: dict[str, Path], blocks: list[_Block]) -> list[T
             )
         if lengths[i - 1] <= 0:
             raise DiscError(f"{path.name}: track {previous.number} has no sectors before track {block.number}'s pregap")
-        # A track in a file of its own starts at the file's start, its pregap ahead of it or not.
-        same_file = block.file == previous.file
-        previous_end = previous.offset + lengths[i - 1] * stride if same_file else 0
+        ends[previous.file] = (previous.number, previous.offset + lengths[i - 1] * stride)
+        before, previous_end = ends.get(block.file, (0, 0))
         if block.offset == previous_end + block.pregap * stride:
             stored[i] = True
         elif block.pregap and block.offset == previous_end:
             stored[i] = False
         else:
-            follows = f"follows track {previous.number}'s sectors" if same_file else "starts the file"
+            follows = f"follows track {before}'s sectors" if before else "starts the file"
             raise DiscError(
                 f"{path.name}: track {block.number}'s sectors start at byte {block.offset} of {images[block.file].name}, which "
                 f"neither {follows} nor its own {block.pregap}-sector pregap stored ahead of it"
@@ -231,10 +233,10 @@ def _tracks(path: Path, images: dict[str, Path], blocks: list[_Block]) -> list[T
     last = blocks[-1]
     if last.length <= 0:
         raise DiscError(f"{path.name}: track {last.number} has no sectors")
+    sizes = {file: image.stat().st_size for file, image in images.items()}
     for i, block in enumerate(blocks):
-        image = images[block.file]
-        if block.offset + lengths[i] * stride > image.stat().st_size:
-            raise DiscError(f"track {block.number} runs past the end of {image.name}")
+        if block.offset + lengths[i] * stride > sizes[block.file]:
+            raise DiscError(f"track {block.number} runs past the end of {images[block.file].name}")
     tracks = []
     for i, block in enumerate(blocks):
         image = images[block.file]

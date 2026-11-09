@@ -565,7 +565,7 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
         _verify_game_dir(output, disc, reference, result)
     if any(t.subchannel for t in disc.tracks):
         result.not_compared.append("the subchannel the source stores after each sector, which the archiver skips")
-    descriptor = next((f for f in output.files if f.suffix.lower() == ".mds"), None) if kind == "bincue-split" else None
+    descriptor = output.descriptor
     if descriptor is not None:
         # The descriptor beside the cue sheet names the same .bin files; read through it, they must
         # give the disc the sheet gives.
@@ -699,10 +699,14 @@ def derive(
             output.notes.append(
                 "The source stores subchannel after each sector. The archiver skips it, so this copy does not carry it."
             )
-        if disc.dpm is not None and identifier != "mds" and not any(f.suffix.lower() == ".mds" for f in output.files):
+        if disc.dpm is not None and identifier != "mds" and output.descriptor is None:
             output.notes.append(
                 "The source carries DPM data (where the sectors lie on the disc), which this format has no place for. "
-                "The mds copy holds it."
+                + (
+                    "The mds copy holds it."
+                    if len(disc.sessions) == 1
+                    else "No copy holds it, since the mds copy holds one session and the disc has several."
+                )
             )
         log(f"Verifying {identifier}")
         verification = verify_output(output, disc, reference, root, log)
@@ -1098,10 +1102,16 @@ def archive(
         wanted = list(resolve_formats(formats if formats is not None else [RECOMMENDED], profile, disc.layout, raw))
         if drive is not None:
             source["dpm"] = measure_dpm(drive, disc, dump, output, dpm, settings, source["discAnalysis"], log)  # type: ignore[arg-type]
-            if disc.dpm is not None and "mds" not in wanted and "bincue-split" not in wanted:
+            if disc.dpm is not None and len(disc.sessions) > 1:
                 log(
-                    "DPM: no mds copy was asked for, and no other format holds DPM data. Convert "
-                    f"{source['dump']} with --format mds to make a copy that holds it."
+                    "DPM: the mds copy and the bincue-split descriptor hold one session, and the disc has several, "
+                    f"so only the measurement beside {source['dump']} keeps the DPM data."
+                )
+            elif disc.dpm is not None and loaded is None and "mds" not in wanted and "bincue-split" not in wanted:
+                # A DAT has bincue-split written too (see derive), and its descriptor holds the DPM data.
+                log(
+                    "DPM: neither an mds copy nor a bincue-split copy was asked for, and no other format holds DPM data. "
+                    f"Convert {source['dump']} with --format mds to make a copy that holds it."
                 )
         else:
             sidecar = sidecar_path(dump)
