@@ -91,7 +91,7 @@ After the dump, `rip` measures them itself when `--dpm` says so
 The measurement times single-sector READ(10) commands with Force Unit Access over the first data
 track, at the speed `--dpm-speed` fixes (4x by default; Alcohol 120% advises the lowest a drive
 offers). The time between the completions of two back-to-back reads, divided by the disc's
-rotation period, gives the angle between their sectors to within whole turns. The whole turns are the nearest to those the calibrated sectors per turn predict, which the steps before may move by at most a quarter turn, so a pressing's density bands are followed but a run of bad steps cannot carry the rest of the disc a turn off. Each pass starts with a few reads at its first sector, so the drive has the disc up to speed again after the last calibration near the end of the track. The period is calibrated every 20,000 sectors from sweeps
+rotation period, gives the angle between their sectors to within whole turns. The whole turns are the nearest to those the calibrated sectors per turn predict, which the steps before may move by at most a quarter turn, so a pressing's density bands are followed but a run of bad steps cannot carry the rest of the disc a turn off. Each pass starts with a few reads at its first sector, so the drive has the disc up to speed again after the last calibration near the end of the track, and so does each step read again after the passes. The period is calibrated every 20,000 sectors from sweeps
 of read pairs one to 64 sectors apart: their times rise by a sector per step and drop by one turn
 at each wrap. A read completes when its sector passes the head, and a drive whose turnaround
 depends on the distance to the sector answers the reads past some distance a whole turn later or

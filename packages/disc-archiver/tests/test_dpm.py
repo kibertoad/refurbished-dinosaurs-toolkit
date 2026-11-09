@@ -273,6 +273,25 @@ class MeasurementTests(unittest.TestCase):
         for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 0, 50, 3999), strict=True)):
             self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
 
+    def test_a_step_read_again_after_a_long_seek_waits_for_the_spindle(self) -> None:
+        # Sectors 1,000 and 1,050 fail through both passes and read again afterwards, so their
+        # steps are read again straight after the seek back from the end of the last pass.
+        disc = FakeDisc()
+        drive = FakeDrive(disc, settle_reads=8, settle_share=0.6, failing=[1000, 1050])
+        started: list[str] = []
+
+        def log(message: str) -> None:
+            if message.startswith("DPM: pass 2"):
+                started.append(message)
+            elif started and message.startswith("DPM: 90% of the pass"):
+                drive.failing.clear()
+
+        result = measure(drive, drive.clock, 0, 200_000, Settings(), log)
+        assert result.dpm is not None, result.record["reason"]
+        self.assertGreater(result.record["statistics"]["remeasuredSteps"], 0)  # type: ignore[index]
+        for i, (found, wanted) in enumerate(zip(steps(result.dpm), true_steps(disc, 0, 50, 3999), strict=True)):
+            self.assertLessEqual(abs(found - wanted), 2, f"step {i}")
+
     def test_steps_that_slide_a_turn_off_one_after_another_leave_the_turns_alone(self) -> None:
         # The fractions of a pass whose first steps slide off by most of a turn, one after another,
         # as a real drive's did while its spindle settled. Turns predicted from the steps before

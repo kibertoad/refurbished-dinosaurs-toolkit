@@ -33,11 +33,12 @@ established dumper the archiver runs can measure DPM.
    may move by at most a quarter turn. Predicting from the bins before alone let a real drive's
    first steps of a pass, timed while its spindle still sped the disc up after the seek back from
    the last calibration, carry every later bin a whole turn low, so each pass now also starts
-   with spin-up reads at its first sector. The period is calibrated from sweeps of read
+   with spin-up reads at its first sector, and so does each step read again after the passes.
+   The period is calibrated from sweeps of read
    pairs (S, S+d), whose times rise by one sector per step and drop by one turn at each wrap,
    every 20,000 sectors. The drops need not come a turn apart: a drive whose turnaround depends
    on the distance to the sector answers the reads past some distance a whole turn later or
-   sooner, and the fit of every read time counts those whole turns, and the square of the period is interpolated between calibrations. Reads
+   sooner, and the fit of every read time counts those whole turns. The square of the period is interpolated between calibrations. Reads
    are READ(10) of one sector with Force Unit Access, at a speed fixed with SET CD SPEED (4x by
    default), timed with `perf_counter_ns`. Entries are every 50 sectors over the first data
    track, in two passes.

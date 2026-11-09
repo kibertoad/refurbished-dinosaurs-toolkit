@@ -126,13 +126,13 @@ class FakeDrive:
         seek = 0.0
         if self.last is not None:
             seek = 40e6 * abs(self.disc.radius(lba) - self.disc.radius(self.last)) / 0.035
+            if self.jump_overhead and self.disc.angle(lba) - self.disc.angle(self.last) > self.jump_turns:
+                seek += self.jump_overhead
             if self.settle_reads and abs(self.disc.radius(lba) - self.disc.radius(self.last)) > 0.01:
                 self.settling = self.settle_reads
         if self.settling:
             period *= 1 + self.settle_share * self.settling / self.settle_reads
             self.settling -= 1
-            if self.jump_overhead and self.disc.angle(lba) - self.disc.angle(self.last) > self.jump_turns:
-                seek += self.jump_overhead
         self._advance(self.overhead + seek + abs(self._noise()), period)
         wait = (self.disc.angle(lba + 1) - self.phase) % 1.0
         if self.late_share and self.random.random() < self.late_share:
