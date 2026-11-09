@@ -29,7 +29,11 @@ established dumper the archiver runs can measure DPM.
    comes from the dumper.
 2. Method (`dpmmeasure.py`): the angle between two sectors is the time between the completions of
    two back-to-back reads of them divided by the rotation period, modulo one turn; the whole
-   turns come from the density of the bins before. The period is calibrated from sweeps of read
+   turns are the nearest to those the calibrated sectors per turn predict, which the bins before
+   may move by at most a quarter turn. Predicting from the bins before alone let a real drive's
+   first steps of a pass, timed while its spindle still sped the disc up after the seek back from
+   the last calibration, carry every later bin a whole turn low, so each pass now also starts
+   with spin-up reads at its first sector. The period is calibrated from sweeps of read
    pairs (S, S+d), whose times rise by one sector per step and drop by one turn at each wrap,
    every 20,000 sectors. The drops need not come a turn apart: a drive whose turnaround depends
    on the distance to the sector answers the reads past some distance a whole turn later or

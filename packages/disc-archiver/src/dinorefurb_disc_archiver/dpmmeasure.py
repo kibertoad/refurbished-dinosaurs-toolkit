@@ -3,7 +3,10 @@
 The angle between two sectors is the time between the completions of two back-to-back reads of
 them, divided by the rotation period, modulo one turn. The disc keeps turning while the drive
 takes the second command, and the time from reading a sector off the disc to reporting it is the
-same for both reads, so neither counts. The whole turns come from the density of the bins before.
+same for both reads, so neither counts. The whole turns are the nearest to those the calibrated
+sectors per turn predict, moved by at most a quarter turn towards the bins before (see ``_unwrap``).
+Each pass starts with spin-up reads at its first sector, since the drive comes back from the last
+calibration near the end of the track and needs a few reads to speed the disc up again.
 
 The rotation period is calibrated from sweeps of read pairs (S, S+d), d = 1 to ``sweep``: the
 time grows by one sector's time per step, and drops by one turn where the wait wraps. The period
@@ -51,6 +54,8 @@ MAXIMUM_MEDIAN_JITTER = 0.02
 # a pressing has on purpose span many bins and move the local median with them.
 OUTLIER_TURNS = 0.25
 NEIGHBOURS = 8
+# How far the bins before may move a bin's predicted turns from the calibration's, in turns.
+UNWRAP_FOLLOW = 0.25
 REMEASURE_READS = 3
 # Two sweeps of a calibration must agree on the period and the sector time within this share.
 CALIBRATION_AGREEMENT = 0.02
@@ -399,21 +404,42 @@ class _Measurement:
                 self.log(f"DPM: {100 * i // len(points)}% of the pass, sector {lba}")
         return fractions
 
+    def _spin_up(self) -> None:
+        """Read the first sector until the spindle turns at its speed there.
+
+        Before the first calibration the drive spins up; before each pass it comes back from the
+        last calibration near the end of the track, and a drive at constant linear velocity takes
+        several reads to speed the disc up for the inner radius. A pass timed meanwhile measures its
+        first steps against a period the disc does not yet turn at.
+        """
+        for _ in range(SPIN_UP_READS):
+            try:
+                self.drive.read(self.first)
+            except DriveError:
+                pass
+
     def _unwrap(self, fractions: list[float | None], points: list[int]) -> list[float | None]:
-        """Whole turns for each bin, from the density of the bins before it."""
+        """Whole turns for each bin: the nearest to the turns the calibration predicts for its step,
+        moved by the median of how far the bins before lay from their prediction.
+
+        The calibration gives the turns absolutely; the bins before only follow a density that
+        differs from it, as a pressing's bands do, and may move the prediction by at most
+        ``UNWRAP_FOLLOW`` turns. Predicting from the bins before alone follows a run of bad
+        steps, such as the drive settling after the seek to the start of a pass, a whole turn off
+        and keeps every later bin there.
+        """
         turns: list[float | None] = []
-        recent: list[float] = []
+        offsets: list[float] = []
         for i, fraction in enumerate(fractions):
             if fraction is None:
                 turns.append(None)
                 continue
-            if recent:
-                predicted = _median(recent[-NEIGHBOURS:])
-            else:
-                predicted = self.settings.resolution / self._period(points[i + 1]).sectors_per_turn
+            calibrated = self.settings.resolution / self._period(points[i + 1]).sectors_per_turn
+            follow = _median(offsets[-NEIGHBOURS:]) if offsets else 0.0
+            predicted = calibrated + max(-UNWRAP_FOLLOW, min(UNWRAP_FOLLOW, follow))
             value = round(predicted - fraction) + fraction
             turns.append(value)
-            recent.append(value)
+            offsets.append(value - calibrated)
         return turns
 
     def _remeasure(self, i: int, points: list[int], expected: float) -> float | None:
@@ -442,11 +468,7 @@ class _Measurement:
                 f"{settings.resolution}-sector steps and room for four {settings.sweep}-sector calibration sweeps"
             )
         self.drive.set_speed(settings.kilobytes_per_second)
-        for _ in range(SPIN_UP_READS):
-            try:
-                self.drive.read(self.first)
-            except DriveError:
-                pass
+        self._spin_up()
         positions = list(range(self.first, self.end - settings.sweep - 1, settings.recalibrate_every))
         positions.append(self.end - settings.sweep - 1)
         self.log(f"DPM: calibrating the rotation at {len(positions)} places")
@@ -459,6 +481,7 @@ class _Measurement:
         passes = self.passes
         for number in range(settings.passes):
             self.log(f"DPM: pass {number + 1} of {settings.passes} over {bins} steps of {settings.resolution} sectors")
+            self._spin_up()
             fractions = self._pass(points)
             self.fractions.append(fractions)
             passes.append(self._unwrap(fractions, points))
