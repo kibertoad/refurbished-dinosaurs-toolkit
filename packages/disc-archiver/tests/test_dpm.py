@@ -275,6 +275,16 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(len(rejected[0]["timesNs"]), 64)
         self.assertIsInstance(rejected[0]["reason"], str)
 
+    def test_a_measurement_refused_after_its_passes_keeps_them(self) -> None:
+        result = run(FakeDrive(FakeDisc(), jitter=1e6, seed=3))
+        self.assertIn("the passes disagree", result.record["reason"])
+        details = result.details
+        self.assertEqual(len(details["points"]), 600)
+        self.assertEqual([len(p) for p in details["fractions"]], [599, 599])
+        self.assertEqual([len(p) for p in details["passes"]], [599, 599])
+        measured = [f for f in details["fractions"][0] if f is not None]
+        self.assertTrue(measured and all(0 <= f < 1 for f in measured))
+
     def test_a_drive_that_answers_from_its_cache_is_refused(self) -> None:
         result = run(FakeDrive(FakeDisc(), cache_ignores_fua=True))
         self.assertIsNone(result.dpm)
