@@ -146,6 +146,7 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
             "sha256": user.sha256.hexdigest(),
             "xxh3": user.xxh3.hexdigest(),
             "emptyForm2Sectors": [],
+            "emptyMode2Sectors": [],
             "nonDataSectors": [],
             "nonDataSha256": None,
             "nonDataXxh3": None,
@@ -161,16 +162,17 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
         view = memoryview(chunk)
         for offset in range(0, len(chunk), RAW_SECTOR):
             sector = view[offset : offset + RAW_SECTOR]
+            inside = volume_end is None or index < volume_end
             try:
-                data, empty_form2 = block_data(sector, track.mode, track.index1 + index)
+                data, padding = block_data(sector, track.mode, track.index1 + index, empty_mode2=inside)
             except NotDataSector:
-                if volume_end is None or index < volume_end:
+                if inside:
                     raise
                 raw.write(sector)
                 add_to_ranges(ranges, index)
             else:
                 user.write(data)
-                if empty_form2:
+                if padding:
                     add_to_ranges(empty, index)
             index += 1
     return {
@@ -178,7 +180,9 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
         "sectors": track.length,
         "sha256": user.sha256.hexdigest(),
         "xxh3": user.xxh3.hexdigest(),
-        "emptyForm2Sectors": empty,
+        # One list holds the empty padding sectors of the track's mode: form 2 on MODE2, mode 2 on MODE1.
+        "emptyForm2Sectors": empty if track.mode == "MODE2" else [],
+        "emptyMode2Sectors": empty if track.mode == "MODE1" else [],
         "nonDataSectors": ranges,
         "nonDataSha256": raw.sha256.hexdigest() if ranges else None,
         "nonDataXxh3": raw.xxh3.hexdigest() if ranges else None,
@@ -210,7 +214,11 @@ def fingerprint(disc: Disc, unread: Mapping[int, list[list[int]]] | None = None)
     the track, adds 2,048 zero bytes to ``data.sha256``: the block a MODE1 image of the disc and an
     ISO file hold there, and the bytes the toolkit's ``OriginalContentSource.OpenVolume`` reads for
     it. Those sectors are listed in ``data.emptyForm2Sectors`` as ``[first, stop)`` ranges counted
-    from INDEX 01, since no ISO keeps the fact that they were form 2.
+    from INDEX 01, since no ISO keeps the fact that they were form 2. An empty mode 2 sector of a
+    raw MODE1 track (see ``disc.is_empty_mode2``: mode 2 with every byte after the header zero,
+    padding some mastering programs leave inside the volume) is read the same way and listed in
+    ``data.emptyMode2Sectors``; past the declared volume it is one of the sectors without user
+    data described below, as it was before the field existed.
 
     A raw data track may run past the ISO 9660 volume its primary volume descriptor declares, and
     the sectors there may hold no user data of the track's mode (no sync pattern, another mode, or
@@ -221,7 +229,7 @@ def fingerprint(disc: Disc, unread: Mapping[int, list[list[int]]] | None = None)
     the disc's addresses (a CD-Extra disc's second session), from the start of the disc;
     ``isofs.locate`` finds which from the root directory. Every sector inside the declared volume,
     and every sector of a track whose volume cannot be located, must hold user data or be an empty
-    form 2 sector, or a :class:`DiscError` names the first that is neither. The sector headers'
+    form 2 or mode 2 sector as above, or a :class:`DiscError` names the first that is neither. The sector headers'
     stored addresses are not checked; the address in the header of sector 16 is one of the bases
     ``isofs.locate`` tries.
 
@@ -333,25 +341,37 @@ class Verification:
         }
 
 
+# The manifest's lists of empty padding sectors read as zero blocks: the key, what the sectors
+# are, and the shorter name a difference gives.
+_PADDING_LISTS = (
+    ("emptyForm2Sectors", "empty MODE2 form 2 sectors", "empty form 2 sectors"),
+    ("emptyMode2Sectors", "empty mode 2 sectors on the MODE1 track", "empty mode 2 sectors"),
+)
+
+
 def _compare(reference: dict, found: dict, result: Verification, layout: bool, audio: bool, form2: bool = True) -> None:  # type: ignore[type-arg]
     """Compare a copy's fingerprint with the source's. ``form2`` is False for a copy whose data
-    track is an ISO file, which holds an empty form 2 sector as a zero block and cannot say which
-    sectors were form 2; that is then listed as not compared."""
+    track is an ISO file, which holds an empty form 2 or mode 2 sector as a zero block and cannot
+    say which sectors were; that is then listed as not compared. A manifest written before
+    ``emptyMode2Sectors`` existed lacks it and is read as having none."""
     if reference["data"] is not None:
         mine, theirs = reference["data"], found["data"]
         result.compared.append("data track user data")
         if theirs is None or theirs["sha256"] != mine["sha256"]:
             result.differences.append("the data track's user data differs from the source")
-        if not form2:
-            if mine["emptyForm2Sectors"]:
-                result.not_compared.append(
-                    "which data track sectors are empty MODE2 form 2 sectors (in the source, "
-                    f"{describe_ranges(mine['emptyForm2Sectors'])} counted from INDEX 01), which an ISO holds as zero blocks"
-                )
-        elif mine["emptyForm2Sectors"] or (theirs is not None and theirs["emptyForm2Sectors"]):
-            result.compared.append("which data track sectors are empty MODE2 form 2 sectors")
-            if theirs is not None and theirs["emptyForm2Sectors"] != mine["emptyForm2Sectors"]:
-                result.differences.append("the data track's empty form 2 sectors differ from the source")
+        for key, kind, short in _PADDING_LISTS:
+            listed = mine.get(key, [])
+            copied = None if theirs is None else theirs.get(key, [])
+            if not form2:
+                if listed:
+                    result.not_compared.append(
+                        f"which data track sectors are {kind} (in the source, "
+                        f"{describe_ranges(listed)} counted from INDEX 01), which an ISO holds as zero blocks"
+                    )
+            elif listed or copied:
+                result.compared.append(f"which data track sectors are {kind}")
+                if copied is not None and copied != listed:
+                    result.differences.append(f"the data track's {short} differ from the source")
         if mine["nonDataSectors"] or (theirs is not None and theirs["nonDataSectors"]):
             result.compared.append("raw sectors past the ISO 9660 volume that hold no user data")
         if theirs is not None and (theirs["nonDataSectors"], theirs["nonDataSha256"]) != (mine["nonDataSectors"], mine["nonDataSha256"]):
@@ -625,11 +645,11 @@ def derive(
     if dat is not None and "bincue-split" not in requested:
         log("Writing bincue-split as well, to compare it with the DAT")
         requested.add("bincue-split")
-    # The fingerprint admits sectors without user data past the volume and empty form 2 sectors,
+    # The fingerprint admits sectors without user data past the volume and empty form 2 and mode 2 sectors,
     # and a file extent that reaches one fails only when the file is read. Reading the files here
     # stops such a run before any format is written, as a damaged dump stops at the fingerprint.
     data = reference["data"]
-    admitted = data is not None and bool(data["nonDataSectors"] or data["emptyForm2Sectors"])  # type: ignore[index]
+    admitted = data is not None and bool(data["nonDataSectors"] or data["emptyForm2Sectors"] or data["emptyMode2Sectors"])  # type: ignore[index]
     paths = profile_paths(profile, disc)
     if paths is None and disc.data_tracks and requested & {"files", "game-dir"} and admitted:
         try:
@@ -797,6 +817,7 @@ def _manifest_disc_problem(disc: dict) -> str | None:  # type: ignore[type-arg]
         isinstance(data, dict)
         and isinstance(data.get("sha256"), str)
         and isinstance(data.get("emptyForm2Sectors"), list)
+        and isinstance(data.get("emptyMode2Sectors", []), list)
         and isinstance(data.get("nonDataSectors"), list)
     ):
         return "disc.data is neither null nor a data track's hashes"

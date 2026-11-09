@@ -254,7 +254,7 @@ other type fails to parse.
 
 | Track type | Sector checks | User data |
 |---|---|---|
-| `MODE1/2352` | sync pattern, mode byte 1 | 2048 bytes from byte 16 |
+| `MODE1/2352` | sync pattern, mode byte 1, or for `OpenVolume` and the descriptor and directory reads mode byte 2 with all 2336 bytes from byte 16 zero | 2048 bytes from byte 16 (zeros for an empty mode 2 sector) |
 | `MODE2/2352` | sync pattern, mode byte 2, the CD-XA subheader at bytes 16 to 19 equal to its copy at bytes 20 to 23, the submode's Form 2 bit (0x20) clear, or for `OpenVolume` and the descriptor and directory reads set with the 2324 data bytes from byte 24 all zero | 2048 bytes from byte 24 (Form 1, or zeros for an empty Form 2 sector) |
 
 The two layouts of one disc list the same files and read the same file and volume bytes, so a
@@ -264,15 +264,16 @@ Form 2 sector throw `InvalidDataException` when read. Directories and volume des
 their records in Form 1 sectors, so a disc that stores some files in Form 2 sectors, such as
 interleaved audio or video, still opens and lists them; reading such a file through `OpenRead`,
 or the whole volume through `OpenVolume`, throws when it reaches the first Form 2 sector.
-`OpenVolume` and the descriptor and directory reads while opening make one exception: a Form 2
+`OpenVolume` and the descriptor and directory reads while opening make an exception: a Form 2
 sector whose 2324 data bytes are all zero, such as padding a CD-XA master leaves inside the volume
 space, reads as 2048 zero bytes, which is what a `MODE1/2352` image of the disc holds there, so such
 a disc lists the same files and has the same `VolumeXxh3` in either layout. A zero sector inside a
 directory's extent holds no records, so a directory whose whole extent is such sectors lists no
 files, as in a `MODE1/2352` image. One where a volume descriptor is expected fails as an invalid
 descriptor. `OpenRead` still throws for a file that covers an empty Form 2 sector, and every read
-still throws for a Form 2 sector with any nonzero data byte. The EDC, the ECC and the address in
-each sector's header are not checked.
+still throws for a Form 2 sector with any nonzero data byte.
+They read a second kind of padding the same way: on a `MODE1/2352` track, a mode 2 sector whose 2336 bytes after the header are all zero, which some mastering programs leave inside a MODE1 volume. `OpenRead` still throws for a file that covers one, and every read still throws for a mode 2 sector on a `MODE1/2352` track with any nonzero byte after the header.
+The EDC, the ECC and the address in each sector's header are not checked.
 
 ## Disc images
 

@@ -406,6 +406,7 @@ class PastTheVolumeTests(FormatTestCase):
                 "sha256": hashlib.sha256(self.synthetic.iso + repeated_user).hexdigest(),
                 "xxh3": xxhash.xxh3_128_hexdigest(self.synthetic.iso + repeated_user),
                 "emptyForm2Sectors": [],
+                "emptyMode2Sectors": [],
                 "nonDataSectors": [[first, first + self.BLANK]],
                 "nonDataSha256": hashlib.sha256(bytes(self.BLANK * RAW_SECTOR)).hexdigest(),
                 "nonDataXxh3": xxhash.xxh3_128_hexdigest(bytes(self.BLANK * RAW_SECTOR)),
@@ -554,6 +555,7 @@ class EmptyForm2Tests(FormatTestCase):
                 "sha256": hashlib.sha256(self.synthetic.iso + bytes(self.TAIL * 2048)).hexdigest(),
                 "xxh3": xxhash.xxh3_128_hexdigest(self.synthetic.iso + bytes(self.TAIL * 2048)),
                 "emptyForm2Sectors": [[self.PAD, self.PAD + 1], [v, v + self.TAIL]],
+                "emptyMode2Sectors": [],
                 "nonDataSectors": [],
                 "nonDataSha256": None,
                 "nonDataXxh3": None,
@@ -665,6 +667,101 @@ class EmptyForm2Tests(FormatTestCase):
         self.assertFalse((out / "bincue").exists())
 
 
+class EmptyMode2Tests(FormatTestCase):
+    """A MODE1 data track with an empty mode 2 padding sector inside its volume, as some mastering
+    programs leave near the end of the volume space."""
+
+    PAD = 5  # in the system area, which the ISO holds as zeros
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.source = self.dir / "mode1"
+        self.sheet = self.synthetic.write_split(self.source)
+        self.disc_with(mode1_sector(self.PAD, b"", mode=2))
+
+    def disc_with(self, pad: bytes):  # type: ignore[no-untyped-def]
+        raw = bytearray(self.synthetic.data_raw)
+        raw[self.PAD * RAW_SECTOR : (self.PAD + 1) * RAW_SECTOR] = pad
+        (self.source / "Synth (Track 1).bin").write_bytes(bytes(raw))
+        return read_cue(self.sheet)
+
+    def test_an_empty_mode2_sector_reads_as_a_zero_block_and_is_listed(self) -> None:
+        data = fingerprint(read_cue(self.sheet))["data"]
+        self.assertEqual(data["sha256"], hashlib.sha256(self.synthetic.iso).hexdigest())  # type: ignore[index]
+        self.assertEqual(data["emptyMode2Sectors"], [[self.PAD, self.PAD + 1]])  # type: ignore[index]
+        self.assertEqual(data["emptyForm2Sectors"], [])  # type: ignore[index]
+        self.assertEqual(data["nonDataSectors"], [])  # type: ignore[index]
+
+    def test_raw_formats_keep_it_and_iso_formats_say_what_they_do_not_hold(self) -> None:
+        manifest = derive(read_cue(self.sheet), self.dir / "out", "Synth", ["bincue-split", "iso", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        outputs = {o["format"]: o for o in manifest["outputs"]}  # type: ignore[union-attr, index]
+        statuses = {k: o["verification"]["status"] for k, o in outputs.items()}
+        self.assertEqual(statuses, {"bincue-split": "matched", "iso": "partial", "files": "matched"})
+        self.assertIn("which data track sectors are empty mode 2 sectors on the MODE1 track", outputs["bincue-split"]["verification"]["compared"])
+        iso = outputs["iso"]
+        self.assertEqual(iso["verification"]["differences"], [])
+        self.assertIn(
+            f"which data track sectors are empty mode 2 sectors on the MODE1 track (in the source, {self.PAD} counted from INDEX 01), "
+            "which an ISO holds as zero blocks",
+            iso["verification"]["notCompared"],
+        )
+        self.assertIn(f"Track 1 is MODE1 but has empty mode 2 sectors at {self.PAD}", " ".join(iso["notes"]))
+        self.assertEqual((self.dir / "out" / "iso" / "Synth.iso").read_bytes(), self.synthetic.iso)
+        self.assertEqual(
+            (self.dir / "out" / "bincue-split" / "Synth (Track 1).bin").read_bytes(), (self.source / "Synth (Track 1).bin").read_bytes()
+        )
+
+    def test_a_copy_that_loses_the_mode2_sector_is_a_mismatch(self) -> None:
+        reference = fingerprint(read_cue(self.sheet))
+        found = fingerprint(self.disc_with(mode1_sector(self.PAD, bytes(2048))))
+        self.assertEqual(found["data"]["sha256"], reference["data"]["sha256"])  # type: ignore[index]
+        result = pipeline.Verification()
+        pipeline._compare(reference, found, result, layout=True, audio=True)
+        self.assertEqual(result.differences, ["the data track's empty mode 2 sectors differ from the source"])
+
+    def test_a_manifest_from_before_the_field_reads_as_having_none(self) -> None:
+        found = fingerprint(read_cue(self.sheet))
+        reference = fingerprint(self.disc_with(mode1_sector(self.PAD, bytes(2048))))
+        del reference["data"]["emptyMode2Sectors"]  # type: ignore[attr-defined]
+        self.assertIsNone(pipeline._manifest_disc_problem(reference))
+        result = pipeline.Verification()
+        pipeline._compare(reference, found, result, layout=True, audio=True)
+        self.assertEqual(result.differences, ["the data track's empty mode 2 sectors differ from the source"])
+
+    def test_a_mode2_sector_with_any_nonzero_byte_is_refused(self) -> None:
+        # The first byte of the would-be subheader, a byte of form 1 user data, and the last byte.
+        for offset in (16, 24 + 2047, RAW_SECTOR - 1):
+            sector = bytearray(mode1_sector(self.PAD, b"", mode=2))
+            sector[offset] = 1
+            with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is mode 2, not the MODE1"):
+                fingerprint(self.disc_with(bytes(sector)))
+
+    def test_past_the_volume_it_stays_a_sector_without_user_data_and_no_iso_is_written(self) -> None:
+        volume = len(self.synthetic.iso) // 2048
+        padding = mode1_sector(volume, b"", mode=2)
+        (self.source / "Synth (Track 1).bin").write_bytes(self.synthetic.data_raw + padding)
+        disc = read_cue(self.sheet)
+        data = fingerprint(disc)["data"]
+        self.assertEqual(data["emptyMode2Sectors"], [])  # type: ignore[index]
+        self.assertEqual(data["nonDataSectors"], [[volume, volume + 1]])  # type: ignore[index]
+        self.assertEqual(data["nonDataSha256"], hashlib.sha256(padding).hexdigest())  # type: ignore[index]
+        with self.assertRaisesRegex(FormatUnavailable, f"sector {volume} is mode 2, not the MODE1"):
+            self.write("iso", disc)
+        self.assertEqual(list((self.dir / "iso").glob("*.iso")), [])
+
+    def test_a_file_on_an_empty_mode2_sector_stops_the_run_before_any_format(self) -> None:
+        iso = bytearray(iso_image(joliet=False))
+        record = iso.index(b"README.TXT;1") - 33
+        iso[record + 2 : record + 10] = self.PAD.to_bytes(4, "little") + self.PAD.to_bytes(4, "big")
+        raw = bytearray(b"".join(mode1_sector(lba, bytes(iso[lba * 2048 : (lba + 1) * 2048])) for lba in range(len(iso) // 2048)))
+        raw[self.PAD * RAW_SECTOR : (self.PAD + 1) * RAW_SECTOR] = mode1_sector(self.PAD, b"", mode=2)
+        (self.source / "Synth (Track 1).bin").write_bytes(bytes(raw))
+        out = self.dir / "out"
+        with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is mode 2, not the MODE1"):
+            derive(read_cue(self.sheet), out, "Synth", ["bincue", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertFalse((out / "bincue").exists())
+
+
 class SourceLimitTests(FormatTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -760,6 +857,7 @@ class VolumeAddressTests(FormatTestCase):
                 "sha256": hashlib.sha256(extra.iso).hexdigest(),
                 "xxh3": xxhash.xxh3_128_hexdigest(extra.iso),
                 "emptyForm2Sectors": [],
+                "emptyMode2Sectors": [],
                 "nonDataSectors": [[extra.volume, extra.volume + self.PADDING]],
                 "nonDataSha256": hashlib.sha256(bytes(self.PADDING * RAW_SECTOR)).hexdigest(),
                 "nonDataXxh3": xxhash.xxh3_128_hexdigest(bytes(self.PADDING * RAW_SECTOR)),

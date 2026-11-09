@@ -134,7 +134,7 @@ internal sealed record DiscImage(
         {
             case RawDiscDataTrack raw:
                 openFiles = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode, layoutSource: raw.LayoutSource);
-                openVolume = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode, emptyForm2AsZeros: true,
+                openVolume = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode, emptyPaddingAsZeros: true,
                     layoutSource: raw.LayoutSource);
                 break;
             case CookedDiscDataTrack cooked:

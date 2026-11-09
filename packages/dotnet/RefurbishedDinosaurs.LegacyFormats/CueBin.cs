@@ -577,11 +577,13 @@ internal enum RawDataTrackMode
 /// <c>leaveOpen</c>, disposing the stream leaves <c>source</c> open, as <see cref="Iso9660"/> needs
 /// for the image the caller keeps.
 /// <para>
-/// With <c>emptyForm2AsZeros</c>, a MODE2 Form 2 sector whose 2324 data bytes are all zero reads as
-/// 2048 zero bytes instead of throwing. Volume reads and the reads of the descriptors and
-/// directories pass it, so padding a CD-XA master leaves in Form 2 inside the volume space reads as
-/// the zero blocks a MODE1 image of the disc holds there. File reads do not pass it.
-/// A Form 2 sector that carries any nonzero data byte still throws.
+/// With <c>emptyPaddingAsZeros</c>, two kinds of padding sector read as 2048 zero bytes instead of
+/// throwing: on a MODE2 track, a Form 2 sector whose 2324 data bytes are all zero; on a MODE1
+/// track, a mode 2 sector whose 2336 bytes after the header are all zero, which some mastering
+/// programs leave inside a MODE1 volume. Volume reads and the reads of the descriptors and
+/// directories pass it, so such padding inside the volume space reads as the zero blocks a MODE1
+/// image of the disc holds there. File reads do not pass it. A Form 2 sector that carries any
+/// nonzero data byte, and a mode 2 sector on a MODE1 track with any nonzero byte, still throw.
 /// </para>
 /// <para>
 /// <c>layoutSource</c> names the descriptor that declared the track, such as
@@ -591,7 +593,7 @@ internal enum RawDataTrackMode
 /// </remarks>
 internal sealed class RawDataTrackUserDataStream(
     Stream source, long sectorCount, RawDataTrackMode mode, bool leaveOpen = false,
-    bool emptyForm2AsZeros = false, string? layoutSource = null) : Stream
+    bool emptyPaddingAsZeros = false, string? layoutSource = null) : Stream
 {
     private const int LogicalSectorSize = 2048;
     private const int ModeOffset = 15;
@@ -665,12 +667,18 @@ internal sealed class RawDataTrackUserDataStream(
             throw new InvalidDataException(
                 $"Sector {index} has no {declared} sync pattern; " +
                 (layoutSource is null ? "the BIN does not match its cue sheet." : $"the image does not match {layoutSource}."));
-        if (sector[ModeOffset] != modeByte)
+        if (sector[ModeOffset] != modeByte && !IsEmptyMode2OnMode1Track())
             throw new InvalidDataException(
                 $"Sector {index} is mode {sector[ModeOffset]}, but {layoutSource ?? "the cue sheet"} declares {declared}.");
         if (mode == RawDataTrackMode.Mode2Form1) CheckSubheader(index);
         sectorIndex = index;
     }
+
+    // A mode 2 sector of a MODE1 track whose bytes after the header are all zero, read as padding.
+    // Its 2048 bytes at the MODE1 user data offset are zero, so it is handed on as it is.
+    private bool IsEmptyMode2OnMode1Track() =>
+        emptyPaddingAsZeros && mode == RawDataTrackMode.Mode1 && sector[ModeOffset] == 2
+        && !sector.AsSpan(SubheaderOffset).ContainsAnyExcept((byte)0);
 
     private void CheckSubheader(long index)
     {
@@ -681,7 +689,7 @@ internal sealed class RawDataTrackUserDataStream(
                 $"Sector {index} is MODE2 but its two subheader copies differ, so it is not a CD-XA " +
                 "Form 1 sector. Only MODE2/2352 tracks of CD-XA Form 1 sectors are supported.");
         if ((first[2] & Form2Submode) == 0) return;
-        if (!emptyForm2AsZeros)
+        if (!emptyPaddingAsZeros)
             throw new InvalidDataException(
                 $"Sector {index} is a MODE2 Form 2 sector. Form 2 sectors carry 2324 bytes of user data " +
                 "without ECC and cannot be read as ISO 9660 user data; only Form 1 sectors are " +
