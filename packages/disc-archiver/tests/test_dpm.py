@@ -168,6 +168,21 @@ class BlockTests(unittest.TestCase):
         self.assertFalse(any("The mds copy holds it" in note for note in output["notes"]))
         self.assertTrue(any("No copy holds it" in note for note in output["notes"]))
 
+    def test_the_note_of_a_copy_without_dpm_names_the_copies_that_hold_it(self) -> None:
+        self.disc.dpm = SAMPLE
+        cases = [
+            (["bincue-split", "iso"], "bincue-split/Synth.mds, the descriptor of the bincue-split copy, holds it."),
+            (["mds", "iso"], "The mds copy holds it."),
+            (["bincue-split", "mds", "iso"], "The mds copy and bincue-split/Synth.mds, the descriptor of the bincue-split copy, hold it."),
+            (["iso"], "No copy written here holds it"),
+        ]
+        for formats, expected in cases:
+            with self.subTest(formats=formats):
+                manifest = derive(self.disc, self.dir / "-".join(formats), "Synth", formats, BUILTIN_PROFILES["any"], silent_log, {})
+                (iso,) = [o for o in manifest["outputs"] if o["format"] == "iso"]
+                (note,) = [n for n in iso["notes"] if "DPM" in n]
+                self.assertIn(expected, note)
+
     def test_without_dpm_a_split_copy_has_no_descriptor(self) -> None:
         output = pipeline.write_format("bincue-split", self.disc, self.dir / "split", "Synth", silent_log)
         self.assertFalse(any(f.suffix == ".mds" for f in output.files))

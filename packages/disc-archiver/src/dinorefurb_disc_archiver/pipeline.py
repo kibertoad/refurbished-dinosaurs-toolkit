@@ -702,11 +702,7 @@ def derive(
         if disc.dpm is not None and identifier != "mds" and output.descriptor is None:
             output.notes.append(
                 "The source carries DPM data (where the sectors lie on the disc), which this format has no place for. "
-                + (
-                    "The mds copy holds it."
-                    if len(disc.sessions) == 1
-                    else "No copy holds it, since the mds copy holds one session and the disc has several."
-                )
+                + _dpm_holders(disc, wanted, name)
             )
         log(f"Verifying {identifier}")
         verification = verify_output(output, disc, reference, root, log)
@@ -746,6 +742,21 @@ def derive(
     }
     (root / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
+
+
+def _dpm_holders(disc: Disc, wanted: list[str], name: str) -> str:
+    """Which of the copies asked for hold the disc's DPM data, for the note of a copy that does not."""
+    if len(disc.sessions) != 1:
+        return "No copy holds it, since the mds copy holds one session and the disc has several."
+    holders = [
+        *(["the mds copy"] if "mds" in wanted else []),
+        *([f"bincue-split/{name}.mds, the descriptor of the bincue-split copy,"] if "bincue-split" in wanted else []),
+    ]
+    if not holders:
+        return "No copy written here holds it; convert the source with --format mds or bincue-split to make one that does."
+    sentence = f"{' and '.join(holders)} {'hold' if len(holders) > 1 else 'holds'} it."
+    # A sentence that opens with a path keeps the path's case.
+    return sentence[0].upper() + sentence[1:] if sentence.startswith("the ") else sentence
 
 
 def _redump(dat: redump.Dat, root: Path, outputs: list[dict], unavailable: list[dict], disc: Disc) -> dict[str, object]:  # type: ignore[type-arg]
