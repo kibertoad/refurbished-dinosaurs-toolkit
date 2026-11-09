@@ -62,13 +62,16 @@ if command == "refine":
         remaining.write_text("[]")
     sys.exit(0)
 if command in ("hash", "info"):
+    header = ["=== 2026-01-02 06:00:00 " + "=" * 56, "redumper (build: b767)", "", "arguments: " + " ".join(sys.argv[1:])]
     if command == "info" and os.environ.get("STAND_IN_INFO_FAILS"):
+        # redumper logs the step's header before the error it stops on, to its log as well.
+        with Path(folder, name + ".log").open("a") as appended:
+            appended.write("\\n".join([*header, "*** INFO (time check: 0s)", "", "error: unable to read image"]) + "\\n")
         print("error: unable to read image")
         sys.exit(1)
     steps = redumper_analysis_steps(securom="unknown" if os.environ.get("STAND_IN_ANALYSIS") else None)
     first = steps.index("*** HASH (time check: 0s)" if command == "hash" else "*** INFO (time check: 0s)")
     stop = steps.index("*** INFO (time check: 0s)") if command == "hash" else len(steps)
-    header = ["=== 2026-01-02 06:00:00 " + "=" * 56, "redumper (build: b767)", "", "arguments: " + " ".join(sys.argv[1:])]
     with Path(folder, name + ".log").open("a") as appended:
         appended.write("\\n".join([*header, *steps[first:stop]]) + "\\n")
     sys.exit(0)
@@ -316,6 +319,16 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(len(analysis["dataTracks"]), 1)  # type: ignore[index]
         self.assertEqual(analysis["protectionSchemes"], [])  # type: ignore[index]
 
+    def test_after_data_errors_the_hash_and_info_steps_get_the_extra_arguments(self) -> None:
+        out = self.dir / "out"
+        errors = json.dumps({"bad": [5, 6], "transient": True})
+        with mock.patch.dict(os.environ, {"STAND_IN_ERRORS": errors}):
+            archive(output=out, profile=BUILTIN_PROFILES["data-only"], log=silent_log, drive="E:", name="Game", backend="redumper", backend_args=["--verbose"])
+        calls = json.loads((out / "archival" / "calls.json").read_text())
+        for step in ("split", "hash", "info"):
+            with self.subTest(step=step):
+                self.assertIn("--verbose", next(c for c in calls if c[0] == step))
+
     def test_securom_is_found_after_data_errors_and_calls_for_dpm(self) -> None:
         # The disc run stops at split, before its info step, as a dump with C2 errors does.
         def no_drive_layer(drive: str) -> None:
@@ -337,7 +350,7 @@ class ProgramBackendTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"STAND_IN_ERRORS": errors, "STAND_IN_INFO_FAILS": "1"}):
             manifest = archive(output=out, profile=BUILTIN_PROFILES["data-only"], log=lines.append, drive="E:", name="Game", backend="redumper")
         self.assertIsNone(manifest["source"]["discAnalysis"]["protectionSchemes"])  # type: ignore[index]
-        self.assertTrue(any(line.startswith("redumper info did not run on the image") for line in lines))
+        self.assertTrue(any(line.startswith("redumper info failed on the image") for line in lines))
         self.assertTrue(manifest_ok(manifest))
 
     def test_too_many_errors_are_not_read_again(self) -> None:
@@ -740,6 +753,13 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
         last = redumper_log(extra_lines=tuple(redumper_analysis_steps(securom=None, write_offset=+6, offsets=((-1, -1, 1000, 6),))))
         found = self.analysis(earlier + last)
         self.assertEqual((found["protectionSchemes"], found["writeOffset"], found["offsetShifts"]), ([], 6, []))
+
+    def test_an_info_step_that_stopped_on_an_error_gives_no_info_fields(self) -> None:
+        steps = redumper_analysis_steps()
+        stopped = [*steps[: steps.index("  scheme: unknown")], "error: unable to read image"]
+        found = self.analysis(redumper_log(extra_lines=tuple(stopped)))
+        self.assertEqual((found["dataTracks"], found["protectionSchemes"]), (None, None))
+        self.assertEqual(found["writeOffset"], -572)
 
     def test_a_log_without_a_dump_gives_nothing(self) -> None:
         self.assertIsNone(backends.redumper_disc_analysis(""))

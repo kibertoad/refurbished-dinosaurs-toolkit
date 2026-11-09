@@ -451,6 +451,18 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(self.measure("auto", None))
         self.assertEqual(self.opened, [])
 
+    def test_auto_says_when_the_info_step_gave_no_result(self) -> None:
+        printed: list[str] = []
+        with mock.patch.object(pipeline, "open_dpm_drive", self.open_drive):
+            record = pipeline.measure_dpm("E:", self.disc, self.dump, self.dir, "auto", Settings(), {"protectionSchemes": None}, printed.append)
+        self.assertIsNone(record)
+        self.assertEqual(self.opened, [])
+        self.assertTrue(any("info step gave no result" in line for line in printed))
+        printed.clear()
+        with mock.patch.object(pipeline, "open_dpm_drive", self.open_drive):
+            pipeline.measure_dpm("E:", self.disc, self.dump, self.dir, "auto", Settings(), {"protectionSchemes": []}, printed.append)
+        self.assertEqual(printed, [])
+
     def test_always_measures_without_a_trigger(self) -> None:
         record = self.measure("always", None)
         assert record is not None

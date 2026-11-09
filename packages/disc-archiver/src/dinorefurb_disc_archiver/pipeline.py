@@ -1146,6 +1146,11 @@ def measure_dpm(
     reason = trigger(analysis)
     if mode == "never" or (mode == "auto" and reason is None):
         if reason is None:
+            if mode == "auto" and analysis is not None and analysis.get("protectionSchemes") is None:
+                log(
+                    "DPM: redumper's info step gave no result, so whether the disc has SecuROM is unknown and "
+                    "--dpm auto does not measure. Measure it with --dpm always or disc-archiver dpm."
+                )
             return None
         log(f"DPM: {reason}, but --dpm never skips the measurement, so the copy lacks the data the protection checks.")
         return {"trigger": reason, "status": "skipped", "reason": "--dpm never was given"}
