@@ -180,7 +180,11 @@ def _recover(
     more, slowly (``REFINE_SPEED``, ``REFINE_RETRIES``), with the drive's sector order given
     explicitly, since ``--auto-detect`` acts in the disc command only. Then ``redumper split``
     writes the image, with ``--force-split`` while bad sectors remain: it regenerates them from
-    their data, as Redump's dumps of such discs hold them. Returns the ``dataErrors`` record:
+    their data, as Redump's dumps of such discs hold them. ``redumper hash`` and ``redumper info``
+    then run on the image, the steps the disc command ends with when it does not stop on data
+    errors, so the analysis holds what the info step finds, the SecuROM scheme among it, whether or
+    not the first read had errors. They read only the image; when one fails, the rip goes on
+    without it and the analysis lacks what it logs. Returns the ``dataErrors`` record:
     ``sectorsBefore``, ``refined``, ``sectors`` left, ``edcFailing`` among them, their ``ranges``,
     the ``files`` holding them (null when the file system could not be read) and the ``outcome``
     (see ``dataerrors.outcome``).
@@ -214,6 +218,11 @@ def _recover(
     else:
         log(f"That is more than {dataerrors.REFINE_MAX_SECTORS}, so they are not read again.")
     tools.run([program, "split", *image, *extra, *(["--force-split"] if facts.sectors else [])], log, cwd=directory)
+    for step in ("hash", "info"):
+        try:
+            tools.run([program, step, *image], log, cwd=directory)
+        except DiscError as error:
+            log(f"redumper {step} did not run on the image ({error}), so the disc analysis lacks what it finds.")
     result = dataerrors.outcome(before, facts)
     _log_outcome(log, result, facts)
     return {
@@ -455,8 +464,8 @@ def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
       the ``warning:`` prefix, each once, in order.
 
     A key is None when the steps that log it did not run or did not log it: ``dataTracks`` and
-    ``protectionSchemes`` without an info step, as after data errors, where the hash and info
-    steps are not run. Returns None when no run dumped from a drive.
+    ``protectionSchemes`` without an info step, as when ``redumper info`` failed after data
+    errors. Returns None when no run dumped from a drive.
     """
     runs = dataerrors.runs(log_text)
     dumped = [i for i, run in enumerate(runs) if _redumper_dumped(run)]
