@@ -224,22 +224,51 @@ def _assign(tracks: list[dict[str, object]], game: DatGame) -> list[DatRom | Non
     return found
 
 
-def _sheet_explanation(sheet: bytes, renames: dict[str, str], wanted: list[DatRom]) -> str:
-    """Which differences between the copy's cue sheet and the DAT's account for the mismatch."""
+ZERO_CATALOG = b"CATALOG 0000000000000"
+"""A disc without a media catalog number. Some drives report it as thirteen zeros, others not at all,
+so a cue sheet may have this line or not for the same disc."""
+
+
+def _sheet_variants(sheet: bytes, renames: dict[str, str]) -> list[tuple[list[str], bytes]]:
+    """The copy's cue sheet with what does not describe the disc's bytes changed, each with the
+    list of what was changed: its ``FILE`` names made the DAT's track names, its line endings made
+    CRLF or LF, and an all-zero ``CATALOG`` line removed or added. The sheet as it is comes first."""
+    changes: list[str] = []
     renamed = sheet
     if renames:
         # One pass, so a name that is also another track's DAT name is not renamed twice.
         theirs = {mine.encode(): new.encode() for mine, new in renames.items()}
         pattern = re.compile(b'FILE "(' + b"|".join(re.escape(mine) for mine in theirs) + b')"')
         renamed = pattern.sub(lambda m: b'FILE "' + theirs[m.group(1)] + b'"', sheet)
+        if renamed != sheet:
+            changes.append("FILE names")
+    variants: list[tuple[list[str], bytes]] = [([], sheet)]
     unix = renamed.replace(b"\r\n", b"\n")
-    keys = {_key(r) for r in wanted}
-    if renames and _bytes_key(renamed) in keys:
-        return "the cue sheet differs only in its FILE names; with the DAT's track names it matches"
-    for variant in (unix.replace(b"\n", b"\r\n"), unix):
-        if variant != renamed and _bytes_key(variant) in keys:
-            return "the cue sheet differs only in its " + ("FILE names and " if renames else "") + "line endings"
-    return "the cue sheet's content differs from the DAT's" + (" beyond its FILE names and line endings" if renames else "")
+    for text in (renamed, unix.replace(b"\n", b"\r\n"), unix):
+        made = changes + (["line endings"] if text != renamed else [])
+        newline = b"\r\n" if b"\r\n" in text else b"\n"
+        zero = ZERO_CATALOG + newline
+        if text.startswith(zero):
+            catalog = (["an all-zero CATALOG line"], text[len(zero):])
+        elif not text.startswith(b"CATALOG "):
+            catalog = (["an all-zero CATALOG line"], zero + text)
+        else:
+            catalog = None
+        variants.append((made, text))
+        if catalog is not None:
+            variants.append((made + catalog[0], catalog[1]))
+    return variants
+
+
+def _sheet_match(sheet: bytes, renames: dict[str, str], wanted: list[DatRom]) -> tuple[DatRom, list[str]] | None:
+    """The DAT's cue sheet the copy's equals once only what :func:`_sheet_variants` changes is
+    changed, with the fewest changes, and what was changed; None when no variant equals one."""
+    by_key = {_key(r): r for r in wanted}
+    for changes, variant in sorted(_sheet_variants(sheet, renames), key=lambda v: len(v[0])):
+        rom = by_key.get(_bytes_key(variant))
+        if rom is not None:
+            return rom, changes
+    return None
 
 
 MAXIMUM_CANDIDATES = 5
@@ -328,10 +357,14 @@ def compare(
 
     ``sheet`` and each of ``tracks`` (in track order) give the file's ``path``, ``size``,
     ``crc32``, ``md5`` and ``sha1``, as ``pipeline.file_hashes`` does. Files are matched by size
-    and all three hashes; names are reported separately. The status is ``matched`` when every
-    track file and the cue sheet match one game's files and the game lists no other file,
-    ``partial`` when the track files match that way but the cue sheet does not (or the DAT lists
-    none), ``notListed`` when no game lists any of the track files, and ``mismatched`` otherwise.
+    and all three hashes; names are reported separately. The cue sheet counts as matching when it
+    equals the DAT's as it is, or once its ``FILE`` names are the DAT's track names, its line
+    endings the DAT's and an all-zero ``CATALOG`` line added or removed; ``cueSheetChanges`` lists
+    what had to change (empty for an exact match). None of those describe the disc's bytes. The
+    status is ``matched`` when every track file and the cue sheet match one game's files and the
+    game lists no other file, ``partial`` when the track files match that way but the cue sheet
+    does not (or the DAT lists none), ``notListed`` when no game lists any of the track files, and
+    ``mismatched`` otherwise.
 
     For ``notListed`` and ``mismatched``, ``candidates`` lists the games nearest by track size
     (see :func:`candidates`); it is empty otherwise. ``kinds`` gives each track's kind, ``audio``
@@ -365,7 +398,7 @@ def _compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: lis
 
     game, assigned = min(assignments, key=rank)
     files = [{"path": sheet["path"], "kind": "cueSheet", "matched": False, "datName": None}]
-    result: dict[str, object] = {"dat": dat.file, "game": None, "files": files, "nameDifferences": [], "differences": []}
+    result: dict[str, object] = {"dat": dat.file, "game": None, "files": files, "nameDifferences": [], "cueSheetChanges": [], "differences": []}
     if not any(assigned):
         files += [{"path": t["path"], "kind": "track", "matched": False, "datName": None} for t in tracks]
         result["status"] = "notListed"
@@ -396,18 +429,20 @@ def _compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: lis
         result["status"] = "mismatched"
         return result
     sheets = [r for r in game.roms if r.is_cue]
-    match = next((r for r in sheets if _key(r) == sheet_key), None)
-    if match is not None:
+    found = _sheet_match(sheet_bytes, renames, sheets)
+    if found is not None:
+        match, changes = found
         files[0].update(matched=True, datName=match.name)
         if match.name != Path(str(sheet["path"])).name:
             names.append({"path": sheet["path"], "datName": match.name})
         result["status"] = "matched"
+        result["cueSheetChanges"] = changes
         return result
     result["status"] = "partial"
     if not sheets:
         differences.append(f"{dat.file} lists no cue sheet for {game.name!r}, so the copy's cue sheet was not compared")
     else:
-        differences.append(_sheet_explanation(sheet_bytes, renames, sheets))
+        differences.append("the cue sheet's content differs from the DAT's, beyond its FILE names, line endings and an all-zero CATALOG line")
     return result
 
 

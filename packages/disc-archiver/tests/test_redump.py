@@ -93,18 +93,69 @@ class RedumpTests(unittest.TestCase):
         self.assertEqual(code, EXIT_OK)
         self.assertEqual(manifest["redump"]["status"], "matched")
 
-    def test_other_names_match_by_hash_and_leave_the_cue_sheet_partial(self) -> None:
+    def test_other_names_match_by_hash_and_the_cue_sheet_with_the_dats_file_names(self) -> None:
         code, out, manifest = self.convert(self.reference_dat(), "--name", "My Copy")
         self.assertEqual(code, EXIT_OK, out)
         report = manifest["redump"]
-        self.assertEqual((report["status"], report["game"]), ("partial", "Synth Game"))
-        self.assertEqual([f["matched"] for f in report["files"]], [False, True, True, True])
+        self.assertEqual((report["status"], report["game"]), ("matched", "Synth Game"))
+        self.assertEqual([f["matched"] for f in report["files"]], [True, True, True, True])
         self.assertEqual(
             report["nameDifferences"][0], {"path": "bincue-split/My Copy (Track 1).bin", "datName": "Synth Game (Track 1).bin"}
         )
-        self.assertEqual(report["differences"], ["the cue sheet differs only in its FILE names; with the DAT's track names it matches"])
+        self.assertEqual(report["cueSheetChanges"], ["FILE names"])
+        self.assertEqual(report["differences"], [])
+        self.assertIn("cue sheet: equals the DAT's after changing its FILE names", out)
 
-    def test_a_cue_sheet_differing_in_line_endings_is_named(self) -> None:
+    def test_an_exact_match_changes_nothing_in_the_cue_sheet(self) -> None:
+        _, _, manifest = self.convert(self.reference_dat(), "--name", "Synth Game")
+        self.assertEqual(manifest["redump"]["cueSheetChanges"], [])
+
+    def sheet_dat(self, sheet: bytes) -> Path:
+        """A DAT listing this copy's tracks and ``sheet`` as the game's cue sheet."""
+        other = self.dir / "dat-sheet" / "Synth Game.cue"
+        other.parent.mkdir(exist_ok=True)
+        other.write_bytes(sheet)
+        return self.write_dat(dat_xml({"Synth Game": [rom_xml(other)] + [rom_xml(t) for t in self.tracks]}))
+
+    def newline(self) -> bytes:
+        return b"\r\n" if b"\r\n" in self.cue.read_bytes() else b"\n"
+
+    def test_an_all_zero_catalog_line_only_the_dat_has_matches(self) -> None:
+        sheet = self.cue.read_bytes()
+        self.assertFalse(sheet.startswith(b"CATALOG "))
+        code, out, manifest = self.convert(self.sheet_dat(b"CATALOG 0000000000000" + self.newline() + sheet), "--name", "My Copy")
+        self.assertEqual(code, EXIT_OK, out)
+        self.assertEqual(manifest["redump"]["status"], "matched")
+        self.assertEqual(manifest["redump"]["cueSheetChanges"], ["FILE names", "an all-zero CATALOG line"])
+
+    def test_an_all_zero_catalog_line_only_the_copy_has_matches(self) -> None:
+        sheet = self.cue.read_bytes()
+        report = redump.compare(
+            redump.parse_dat(self.sheet_dat(sheet).read_bytes(), "redump.dat"),
+            file_hashes(self.cue, self.split.parent),
+            b"CATALOG 0000000000000" + self.newline() + sheet,
+            [file_hashes(t, self.split.parent) for t in self.tracks],
+        )
+        self.assertEqual((report["status"], report["cueSheetChanges"]), ("matched", ["an all-zero CATALOG line"]))
+
+    def test_a_catalog_number_or_other_content_keeps_the_cue_sheet_partial(self) -> None:
+        sheet = self.cue.read_bytes()
+        for name, dat_sheet in (
+            ("a real catalog number", b"CATALOG 0123456789012" + self.newline() + sheet),
+            ("another index time", sheet.replace(b"INDEX 01 00:00:00", b"INDEX 01 00:00:01", 1)),
+        ):
+            with self.subTest(name):
+                self.assertNotEqual(dat_sheet, sheet)
+                code, out, manifest = self.convert(self.sheet_dat(dat_sheet), "--name", "My Copy")
+                self.assertEqual(code, EXIT_OK, out)
+                report = manifest["redump"]
+                self.assertEqual((report["status"], report["cueSheetChanges"]), ("partial", []))
+                self.assertEqual(
+                    report["differences"],
+                    ["the cue sheet's content differs from the DAT's, beyond its FILE names, line endings and an all-zero CATALOG line"],
+                )
+
+    def test_a_cue_sheet_differing_in_line_endings_matches_and_says_so(self) -> None:
         crlf = self.cue.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         other = self.dir / "crlf" / "Synth Game.cue"
         other.parent.mkdir()
@@ -112,8 +163,9 @@ class RedumpTests(unittest.TestCase):
         roms = [rom_xml(other)] + [rom_xml(t) for t in self.tracks]
         code, _, manifest = self.convert(self.write_dat(dat_xml({"Synth Game": roms})), "--name", "Synth Game")
         self.assertEqual(code, EXIT_OK)
-        self.assertEqual(manifest["redump"]["status"], "partial")
-        self.assertEqual(manifest["redump"]["differences"], ["the cue sheet differs only in its line endings"])
+        self.assertEqual(manifest["redump"]["status"], "matched")
+        self.assertEqual(manifest["redump"]["cueSheetChanges"], ["line endings"])
+        self.assertEqual(manifest["redump"]["differences"], [])
 
     def test_a_renamed_cue_sheet_with_the_same_content_matches_and_names_the_difference(self) -> None:
         roms = [rom_xml(self.cue, name="Synth Game (Europe).cue")] + [rom_xml(t) for t in self.tracks]
