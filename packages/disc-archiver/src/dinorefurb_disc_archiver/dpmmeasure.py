@@ -189,6 +189,10 @@ class _Measurement:
         self.cache_hits = 0
         self.calibrations: list[Calibration] = []
         self.calibration_attempts = 0
+        # Each sweep a calibration did not use: where, why, and its read times, for a later look
+        # at a refusal.
+        self.rejected_sweeps: list[dict[str, object]] = []
+        self._sweep_times: list[int] = []
         # A read off the disc waits for its sector to come round, so it takes at least the
         # drive's turnaround: the shortest time of the calibration sweeps, whose sawtooth shows
         # the reads reached the disc. A read faster than half of that came from the cache. 0
@@ -198,6 +202,10 @@ class _Measurement:
     def calibration_details(self) -> list[dict[str, int]]:
         """Each calibration as the measurement file keeps it."""
         return [{"lba": c.lba, "periodNs": round(c.period), "sectorTimeNs": round(c.sector_time)} for c in self.calibrations]
+
+    def details(self) -> dict[str, object]:
+        """The calibrations and the rejected sweeps, as the measurement file keeps them."""
+        return {"calibrations": self.calibration_details(), "rejectedSweeps": self.rejected_sweeps}
 
     # Reads
 
@@ -219,8 +227,10 @@ class _Measurement:
     # Calibration
 
     def _sweep(self, lba: int) -> tuple[float, float, float] | str:
-        """The period, sector time and shortest time one sweep gives, or why it gave none."""
-        times = []
+        """The period, sector time and shortest time one sweep gives, or why it gave none. The
+        read times stay in ``_sweep_times`` until the next sweep."""
+        times: list[float] = []
+        self._sweep_times = []
         for d in range(1, self.settings.sweep + 1):
             try:
                 elapsed = self._timed(lba, lba + d)
@@ -228,6 +238,7 @@ class _Measurement:
                 return f"a read failed ({error})"
             if elapsed is None:
                 return "the drive answered from its cache"
+            self._sweep_times.append(elapsed)
             times.append(float(elapsed))
         # Reads off the disc wait up to a turn, at least 6 sectors at the requested speed. Times
         # that stay within 2 sectors of each other never waited for the disc.
@@ -254,9 +265,15 @@ class _Measurement:
             return "the drops of the read times disagree on the rotation period"
         period = _median([sector_time - steps[i] for i in kept])
         per_turn = period / sector_time
-        spacing = [b - a for a, b in zip(kept, kept[1:], strict=False)]
-        if spacing and abs(_median(spacing) - per_turn) > 1.5:
-            return f"the drops come every {_median(spacing):.1f} sectors, while the times give {per_turn:.1f} sectors per turn"
+        # A drop comes at least a turn after the one before. It can come later: a drive that
+        # needs longer to reach a sector a few turns ahead (a track jump) answers the reads past
+        # that distance a turn late until the wait wraps again, and a late answer left out above
+        # skips a drop. Both add whole turns, which the fit below counts.
+        # The drop right after a read answered a turn late is its return, not a wrap.
+        wrapped = [i for i in kept if i == 0 or steps[i - 1] < period / 2]
+        spacing = [b - a for a, b in zip(wrapped, wrapped[1:], strict=False)]
+        if spacing and min(spacing) < per_turn - 1.5:
+            return f"two drops come {min(spacing)} sectors apart, sooner than the {per_turn:.1f} sectors a turn takes"
         low, high = SECTORS_PER_TURN_RANGE
         if not low <= per_turn <= high:
             return f"the times give {per_turn:.1f} sectors per turn, outside a CD's {low:.0f} to {high:.0f}"
@@ -276,19 +293,32 @@ class _Measurement:
         for attempt in range(CALIBRATION_ATTEMPTS):
             at = min(lba + attempt * self.settings.sweep * 2, self.end - self.settings.sweep - 1)
             self.calibration_attempts += 1
-            first, second = self._sweep(at), self._sweep(at)
-            if isinstance(first, str) or isinstance(second, str):
-                reasons.append(first if isinstance(first, str) else second)
+            first = self._sweep(at)
+            if isinstance(first, str):
+                self._reject(at, first)
+                reasons.append(first)
+                continue
+            first_times = self._sweep_times
+            second = self._sweep(at)
+            if isinstance(second, str):
+                self._reject(at, second)
+                reasons.append(second)
                 continue
             (p1, s1, m1), (p2, s2, m2) = first, second
             if abs(p1 - p2) > CALIBRATION_AGREEMENT * p1 or abs(s1 - s2) > CALIBRATION_AGREEMENT * s1:
-                reasons.append(f"two sweeps disagree: periods {p1 / 1e6:.2f} and {p2 / 1e6:.2f} ms")
+                reason = f"two sweeps disagree: periods {p1 / 1e6:.2f} and {p2 / 1e6:.2f} ms"
+                self._reject(at, reason, first_times)
+                self._reject(at, reason)
+                reasons.append(reason)
                 continue
             floor = 0.5 * min(m1, m2)
             self.cache_floor = floor if not self.cache_floor else min(self.cache_floor, floor)
             # A sweep times the turns around its middle.
             return Calibration(at + self.settings.sweep // 2, (p1 + p2) / 2, (s1 + s2) / 2)
         raise _Refused(f"the rotation could not be calibrated at sector {lba}: {'; '.join(dict.fromkeys(reasons))}")
+
+    def _reject(self, lba: int, reason: str, times: list[int] | None = None) -> None:
+        self.rejected_sweeps.append({"lba": lba, "reason": reason, "timesNs": list(self._sweep_times if times is None else times)})
 
     def _period(self, lba: int) -> Calibration:
         """The calibration at ``lba``, interpolated between the two around it.
@@ -500,7 +530,7 @@ class _Measurement:
             "calibrationAttempts": self.calibration_attempts,
         }
         details: dict[str, object] = {
-            "calibrations": self.calibration_details(),
+            **self.details(),
             "points": points,
             "passes": [[None if v is None else round(v, 5) for v in p] for p in passes],
             "steps": [{"turns": round(v, 5), "status": s} for v, s in zip(final, status, strict=True)],
@@ -541,7 +571,7 @@ def measure(drive: Drive, clock: Clock, first: int, end: int, settings: Settings
                 },
                 "warnings": [],
             },
-            {"calibrations": measurement.calibration_details()},
+            measurement.details(),
         )
     for warning in warnings:
         log(f"DPM: warning: {warning}")

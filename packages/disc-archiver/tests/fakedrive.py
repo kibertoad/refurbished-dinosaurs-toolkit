@@ -8,7 +8,8 @@ radius's distance from the start in track pitches, in turns.
 The drive turns the disc at constant linear velocity for the speed it was set to. A read takes a
 command overhead, waits for the sector's end to pass the head and reports after a latency, each
 with Gaussian jitter. Options make it answer from a cache despite Force Unit Access, fail reads,
-or answer some reads a turn late.
+answer some reads a turn late, or take longer to reach a sector more than a few turns ahead, as a
+drive that jumps tracks to get there does.
 """
 
 from __future__ import annotations
@@ -62,6 +63,8 @@ class FakeDrive:
         read_ahead: int = 512,
         failing: Iterable[int] = (),
         late_share: float = 0.0,
+        jump_turns: float = 0.0,
+        jump_overhead: float = 0.0,
     ) -> None:
         self.disc = disc
         self.overhead = overhead
@@ -72,6 +75,8 @@ class FakeDrive:
         self.read_ahead = read_ahead
         self.failing = set(failing)
         self.late_share = late_share
+        self.jump_turns = jump_turns
+        self.jump_overhead = jump_overhead
         self.now = 0.0
         self.phase = 0.0
         self.speed = 1.0
@@ -108,6 +113,8 @@ class FakeDrive:
         seek = 0.0
         if self.last is not None:
             seek = 40e6 * abs(self.disc.radius(lba) - self.disc.radius(self.last)) / 0.035
+            if self.jump_overhead and self.disc.angle(lba) - self.disc.angle(self.last) > self.jump_turns:
+                seek += self.jump_overhead
         self._advance(self.overhead + seek + abs(self._noise()), period)
         wait = (self.disc.angle(lba + 1) - self.phase) % 1.0
         if self.late_share and self.random.random() < self.late_share:
