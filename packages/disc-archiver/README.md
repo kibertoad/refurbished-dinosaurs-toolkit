@@ -113,9 +113,10 @@ does not grow outwards, or that the drive read more than a quarter faster or slo
 `--dpm-speed` asked is kept with a warning.
 
 An accepted measurement goes into the `mds` copy as an Alcohol 120% DPM block, and
-`archival/<name>.dpm.json` keeps it with every calibration and step, and with the read times of
-each sweep a calibration did not use (`rejectedSweeps`: its `lba`, `reason` and `timesNs`), also
-for a refused measurement. When the formats asked for
+`archival/<name>.dpm.json` keeps it with every calibration and step, the read times of each
+sweep a calibration did not use (`rejectedSweeps`: its `lba`, `reason` and `timesNs`), and the
+step `points` with each pass's fractional turns (`fractions`) and unwrapped turns (`passes`). A
+refused measurement's file keeps as much of that as was measured before the refusal. When the formats asked for
 include no `mds`, the rip says so, and a later `convert --format mds` of the dump makes the copy. `convert` of the archival
 cue sheet takes the `.dpm.json` beside it, and of an `.mds` the image's own DPM block, into the
 `mds` copy. Other formats have no place for it and list it under `notCompared`. The manifest

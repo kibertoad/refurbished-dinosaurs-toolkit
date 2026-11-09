@@ -214,6 +214,11 @@ class _Measurement:
         # Each sweep a calibration did not use: where, why, and its read times, for a later look
         # at a refusal.
         self.rejected_sweeps: list[dict[str, object]] = []
+        # The step points and each pass's fractional turns and unwrapped turns, kept as they are
+        # measured so a refused measurement's file holds them too.
+        self.points: list[int] = []
+        self.fractions: list[list[float | None]] = []
+        self.passes: list[list[float | None]] = []
         self._sweep_times: list[int] = []
         # A read off the disc waits for its sector to come round, so it takes at least the
         # drive's turnaround: the shortest time of the calibration sweeps, whose sawtooth shows
@@ -226,8 +231,15 @@ class _Measurement:
         return [{"lba": c.lba, "periodNs": round(c.period), "sectorTimeNs": round(c.sector_time)} for c in self.calibrations]
 
     def details(self) -> dict[str, object]:
-        """The calibrations and the rejected sweeps, as the measurement file keeps them."""
-        return {"calibrations": self.calibration_details(), "rejectedSweeps": self.rejected_sweeps}
+        """What was measured, as the measurement file keeps it: the calibrations, the rejected
+        sweeps, and once the passes ran, the step points with each pass's fractional turns
+        (``fractions``, the times modulo a turn) and the turns unwrapped from them (``passes``)."""
+        found: dict[str, object] = {"calibrations": self.calibration_details(), "rejectedSweeps": self.rejected_sweeps}
+        if self.fractions:
+            found["points"] = self.points
+            found["fractions"] = [[None if v is None else round(v, 5) for v in p] for p in self.fractions]
+            found["passes"] = [[None if v is None else round(v, 5) for v in p] for p in self.passes]
+        return found
 
     # Reads
 
@@ -443,10 +455,13 @@ class _Measurement:
             if self.calibrations and calibration.lba <= self.calibrations[-1].lba:
                 continue
             self.calibrations.append(calibration)
-        passes = []
+        self.points = points
+        passes = self.passes
         for number in range(settings.passes):
             self.log(f"DPM: pass {number + 1} of {settings.passes} over {bins} steps of {settings.resolution} sectors")
-            passes.append(self._unwrap(self._pass(points), points))
+            fractions = self._pass(points)
+            self.fractions.append(fractions)
+            passes.append(self._unwrap(fractions, points))
         if self.timed_reads and self.cache_hits > MAXIMUM_CACHE_HIT_SHARE * self.timed_reads:
             raise _Refused(
                 f"{self.cache_hits} of {self.timed_reads} timed reads came back in under half the time the calibration "
@@ -548,8 +563,6 @@ class _Measurement:
         }
         details: dict[str, object] = {
             **self.details(),
-            "points": points,
-            "passes": [[None if v is None else round(v, 5) for v in p] for p in passes],
             "steps": [{"turns": round(v, 5), "status": s} for v, s in zip(final, status, strict=True)],
         }
         return dpm, stats, details, warnings
