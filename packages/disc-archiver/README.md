@@ -96,7 +96,7 @@ the steps before gives the whole turns. The period is calibrated every 20,000 se
 of read pairs one to 64 sectors apart. Entries are `--dpm-resolution` sectors apart (50), in
 `--dpm-passes` passes (2) whose disagreement is the jitter. It takes several minutes; leave the
 computer idle meanwhile. It runs on Windows only, through SCSI pass-through, with the drive the
-dump was made in.
+dump was made in, or later in any drive with `disc-archiver dpm` (below).
 
 It is refused, and written into no copy, when a calibration fails (two sweeps disagree, the times
 stay flat or fit no turning disc, or the sectors per turn lie outside a CD's 6 to 26), when more
@@ -114,6 +114,8 @@ include no `mds`, the rip says so, and a later `convert --format mds` of the dum
 cue sheet takes the `.dpm.json` beside it, and of an `.mds` the image's own DPM block, into the
 `mds` copy. Other formats have no place for it and list it under `notCompared`. The manifest
 records it in [`source.dpm`](#the-output-folder).
+
+`disc-archiver dpm --drive E: --input "<folder>/archival/<name>.cue"` measures a disc dumped before: one ripped with `--dpm never`, one whose measurement was refused, or one to measure again in a drive that reads it better, such as a scratched disc in a drive that copes with scratches better than the one that dumped it. Before timing anything it checks that the disc in the drive is the dumped one. The drive's table of contents has to list the dump's tracks (number, data or audio, INDEX 01 address) and the dump's lead-out. Where the dump only assumed the gap before a later session (a cue sheet whose later session opens with audio), that session's addresses and the lead-out after it are compared from where the drive puts the session's first track, which has to leave at least the standard gap. Then the user data of the primary volume descriptor and of 24 sectors spread over the first data track has to equal the dump's. A sector the dump or the drive could not read is left out, as is one the dump kept with a data error (its recorded EDC fails). At least 8 matching sectors have to hold more than zeros, since a sector of zeros matches on any disc. Another disc is refused with exit code 3 and nothing is written. Then the disc is measured as `rip` measures it, with the same `--dpm-speed`, `--dpm-resolution` and `--dpm-passes`, and `archival/<name>.dpm.json` is written beside the cue sheet. An existing one is kept unless `--replace` is given, and even then a refused measurement does not replace an accepted one: the command exits 1 and the record it prints has `file` null. The record (printed as JSON, and in the file) has `trigger` `disc-archiver dpm was run`, `file` named relative to the cue sheet, and `separate`: the archiver version that measured and `sameDisc`, what the check compared (`tracks`, `leadOut`, `assumedGaps` with each assumed session gap and the one the drive gave, `sectorsCompared`, `sectorsBlank` for the matching sectors of zeros among them, `sectorsNotRead`). The rip's manifest is left as it was; `convert` of the cue sheet then takes the measurement into the `mds` copy and the new manifest's `source.dpm.measurement`. Exit codes: `0` measured, `1` refused or failed, `3` another disc.
 
 The measurement has been tested against a simulated drive only. Compare it with Alcohol 120%'s
 DPM of the same disc where you can.
@@ -263,6 +265,7 @@ disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso -
     --accept-personal-use                                # formats from a copy you already have
 disc-archiver rip --drive E: --backend cdrdao --read-offset 6 --output out --accept-personal-use
 disc-archiver rip --drive E: --output out --format mds --dpm always --accept-personal-use  # StarForce
+disc-archiver dpm --drive E: --input "D:\Discs\My Game\archival\My Game.cue"   # DPM of a disc dumped before
 disc-archiver check --input "My Game.cue" --profile disc-profile.json
 disc-archiver check --input "Other copy.cue" --manifest "D:\Discs\My Game\rip-manifest.json"
 disc-archiver check --input "My Game.cue" --dat redump-pc.zip     # against a Redump DAT
@@ -286,7 +289,7 @@ checks and, given `--manifest`, the comparison described in
 [Checking a copy against a manifest](#checking-a-copy-against-a-manifest). Progress goes to
 standard error and the summary to standard output.
 
-Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a profile check failed, a written format differs from its source, a copy given to `check` is not identified as its manifest's disc, the Redump comparison is `mismatched`, or a rip's data errors are `insideFiles`, `tooMany` or `unlocated` (see [Data errors](#data-errors)).
+Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a profile check failed, a written format differs from its source, a copy given to `check` is not identified as its manifest's disc, the Redump comparison is `mismatched`, a rip's data errors are `insideFiles`, `tooMany` or `unlocated` (see [Data errors](#data-errors)), or `dpm` found another disc in the drive than the dump's.
 
 ### Comparing with a Redump DAT
 
@@ -367,7 +370,7 @@ My Game/
   rip-manifest.json
   archival/      the backend's dump, as it wrote it (rip only)
     offset-corrected/   the cdrdao dump with its audio corrected (rip with --read-offset only)
-    My Game.dpm.json    the DPM measurement (rip only, when one ran)
+    My Game.dpm.json    the DPM measurement (rip, when one ran, or disc-archiver dpm)
   bincue/        My Game.cue, My Game.bin, PERSONAL-ARCHIVE-ONLY.txt
   iso/           My Game.iso, PERSONAL-ARCHIVE-ONLY.txt
   files/         My Game/ (the disc's files), PERSONAL-ARCHIVE-ONLY.txt
@@ -474,7 +477,7 @@ My Game/
   - `unavailable`: it could not run, and `reason` says why: not on Windows, the drive could not be opened, or the disc has no data track.
   - `skipped`: `--dpm never` kept a triggered measurement from running.
 
-  For `convert`, `dpm` is null, or `status` `fromSource` with `startSector`, `resolution` and `entries` when the source carries DPM data. A cue sheet with a `.dpm.json` beside it adds `measurement`, the `dpm` record of the rip that wrote the file; when that measurement holds no data (it was `refused`), `status` is `notInSource` with only `measurement`, so the converted copy still records that it lacks DPM data a protection checks.
+  For `convert`, `dpm` is null, or `status` `fromSource` with `startSector`, `resolution` and `entries` when the source carries DPM data. A cue sheet with a `.dpm.json` beside it adds `measurement`, the `dpm` record of the rip or `disc-archiver dpm` run that wrote the file; when that measurement holds no data (it was `refused`), `status` is `notInSource` with only `measurement`, so the converted copy still records that it lacks DPM data a protection checks.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the

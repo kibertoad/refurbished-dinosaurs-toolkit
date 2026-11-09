@@ -16,11 +16,13 @@ from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
 from .pipeline import (
     DPM_MODES,
+    DifferentDisc,
     archive,
     check_against_manifest,
     fingerprint,
     load_manifest,
     manifest_ok,
+    measure_dpm_separately,
     open_source,
     package_version,
     profile_paths,
@@ -38,8 +40,8 @@ EPILOG = f"""\
 exit codes: {EXIT_OK} done and verified; {EXIT_FAILED} failed; {EXIT_USAGE} usage error or notice not
 accepted; {EXIT_MISMATCH} a profile check failed, a written format differs from its source, a
 checked copy is not identified as its manifest's disc, --dat found the copy mismatched with
-the DAT's game, or a rip's data errors remain in a file, in too many sectors to read again, or
-where the file system could not say.
+the DAT's game, a rip's data errors remain in a file, in too many sectors to read again, or
+where the file system could not say, or dpm found another disc in the drive than the dump's.
 
 Copies are for your own archive and your own restoration runtime only. Never share them.
 Run "disc-archiver notice" to read the full notice."""
@@ -70,6 +72,15 @@ def _parser() -> argparse.ArgumentParser:
             type=Path,
             help=f"a Redump DAT you downloaded from redump.org (.dat or its .zip) to compare {compared} with; "
             "never downloaded by the archiver",
+        )
+
+    def dpm_settings(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument("--dpm-speed", type=int, default=Settings.speed, metavar="X", help="read speed of the DPM measurement, 1 to 16 (default 4)")
+        sub.add_argument(
+            "--dpm-resolution", type=int, default=Settings.resolution, metavar="SECTORS", help="sectors between DPM entries (default 50)"
+        )
+        sub.add_argument(
+            "--dpm-passes", type=int, default=Settings.passes, metavar="N", help="passes over the disc, compared for the jitter (default 2)"
         )
 
     def common(sub: argparse.ArgumentParser) -> None:
@@ -125,11 +136,7 @@ def _parser() -> argparse.ArgumentParser:
         "auto (when redumper finds SecuROM 4.8 or later), always (for StarForce, ProtectCD or CD-Cops, which "
         "redumper does not detect) or never. Windows only",
     )
-    rip.add_argument("--dpm-speed", type=int, default=Settings.speed, metavar="X", help="read speed of the DPM measurement, 1 to 16 (default 4)")
-    rip.add_argument(
-        "--dpm-resolution", type=int, default=Settings.resolution, metavar="SECTORS", help="sectors between DPM entries (default 50)"
-    )
-    rip.add_argument("--dpm-passes", type=int, default=Settings.passes, metavar="N", help="passes over the disc, compared for the jitter (default 2)")
+    dpm_settings(rip)
     common(rip)
 
     convert = commands.add_parser("convert", help="write the chosen formats from a copy you already have")
@@ -148,15 +155,42 @@ def _parser() -> argparse.ArgumentParser:
         "exactly or at a shift within the fingerprint's tolerance",
     )
     dat_option(check, "the cue sheet and its track files")
+
+    dpm = commands.add_parser(
+        "dpm",
+        help="measure the DPM of a disc dumped before, in any drive, and keep it beside the dump for convert",
+        description="Time reads of the disc in --drive to measure where its sectors lie (DPM), as a rip does, for a "
+        "dump made before: one ripped with --dpm never, one whose measurement was refused, or one to measure again in "
+        "a drive that reads the disc better. The disc in the drive is first checked against the dump: its table of "
+        "contents and sectors spread over its data track. The measurement goes to <name>.dpm.json beside the cue "
+        "sheet, which convert reads. Windows only.",
+    )
+    dpm.add_argument("--drive", required=True, help="the drive holding the disc, such as E:")
+    dpm.add_argument("--input", required=True, type=Path, help="the dump's cue sheet: archival/<name>.cue of the rip")
+    dpm.add_argument("--replace", action="store_true", help="measure again over a measurement already beside the cue sheet")
+    dpm_settings(dpm)
     return parser
+
+
+def _settings(arguments: argparse.Namespace) -> Settings:
+    return Settings(speed=arguments.dpm_speed, resolution=arguments.dpm_resolution, passes=arguments.dpm_passes)
+
+
+def _dpm(arguments: argparse.Namespace) -> int:
+    try:
+        record = measure_dpm_separately(arguments.drive, arguments.input, _settings(arguments), _log, replace=arguments.replace)
+    except DifferentDisc as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_MISMATCH
+    print(json.dumps(record, indent=2))
+    return EXIT_OK if record["status"] == "measured" else EXIT_FAILED
 
 
 def _dpm_options(arguments: argparse.Namespace) -> dict[str, object]:
     """The DPM measurement's arguments of ``archive`` for a rip; none for convert."""
     if arguments.command != "rip":
         return {}
-    settings = Settings(speed=arguments.dpm_speed, resolution=arguments.dpm_resolution, passes=arguments.dpm_passes)
-    return {"dpm": arguments.dpm, "dpm_settings": settings}
+    return {"dpm": arguments.dpm, "dpm_settings": _settings(arguments)}
 
 
 def _formats(requested: list[str] | None) -> list[str] | None:
@@ -268,6 +302,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         if arguments.command == "tools":
             return _tools()
+        if arguments.command == "dpm":
+            return _dpm(arguments)
         if arguments.command == "install-redumper":
             found = tools.find_tool("redumper")
             if found and not arguments.force:

@@ -73,6 +73,28 @@ class Drive(Protocol):
         """Read one sector off the disc, bypassing the cache. Raises :class:`DriveError` when it fails."""
 
 
+@dataclass(frozen=True)
+class TocEntry:
+    """A track, or the lead-out (number 0xAA), in the drive's table of contents."""
+
+    number: int
+    data: bool
+    lba: int
+
+
+LEAD_OUT = 0xAA
+
+
+class CheckedDrive(Drive, Protocol):
+    """A drive that can also show which disc it holds, for a measurement apart from the dump."""
+
+    def toc(self) -> list[TocEntry]:
+        """The tracks and the lead-out in the drive's table of contents."""
+
+    def read_data(self, lba: int) -> bytes:
+        """The 2,048 bytes of user data of a data sector. Raises :class:`DriveError` when it fails."""
+
+
 class DriveError(DiscError):
     """A read the drive could not complete."""
 

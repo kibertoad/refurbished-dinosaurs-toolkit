@@ -8,16 +8,17 @@ radius's distance from the start in track pitches, in turns.
 The drive turns the disc at constant linear velocity for the speed it was set to. A read takes a
 command overhead, waits for the sector's end to pass the head and reports after a latency, each
 with Gaussian jitter. Options make it answer from a cache despite Force Unit Access, fail reads,
-or answer some reads a turn late.
+or answer some reads a turn late. ``toc`` and ``data`` are the table of contents and the user data
+of each sector it gives the check that it holds the dumped disc.
 """
 
 from __future__ import annotations
 
 import math
 import random
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
-from dinorefurb_disc_archiver.dpmmeasure import DriveError
+from dinorefurb_disc_archiver.dpmmeasure import DriveError, TocEntry
 
 START_RADIUS = 0.024
 PITCH = 1.6e-6
@@ -62,6 +63,8 @@ class FakeDrive:
         read_ahead: int = 512,
         failing: Iterable[int] = (),
         late_share: float = 0.0,
+        toc: Iterable[TocEntry] = (),
+        data: Callable[[int], bytes] | None = None,
     ) -> None:
         self.disc = disc
         self.overhead = overhead
@@ -72,6 +75,9 @@ class FakeDrive:
         self.read_ahead = read_ahead
         self.failing = set(failing)
         self.late_share = late_share
+        self.toc_entries = list(toc)
+        self.data = data
+        self.data_reads: list[int] = []
         self.now = 0.0
         self.phase = 0.0
         self.speed = 1.0
@@ -115,6 +121,15 @@ class FakeDrive:
         self._advance(wait * period, period)
         self._advance(self.latency + abs(self._noise()), period)
         self.last = lba
+
+    def toc(self) -> list[TocEntry]:
+        return list(self.toc_entries)
+
+    def read_data(self, lba: int) -> bytes:
+        self.data_reads.append(lba)
+        if lba in self.failing or self.data is None:
+            raise DriveError(f"sector {lba}: unrecovered read error")
+        return self.data(lba)
 
     def close(self) -> None:
         pass
