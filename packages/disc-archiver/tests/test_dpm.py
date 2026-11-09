@@ -3,10 +3,12 @@ measurement timed against a simulated drive (``fakedrive``)."""
 
 from __future__ import annotations
 
+import io
 import json
 import struct
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -14,11 +16,11 @@ from fakedrive import FakeDisc, FakeDrive
 from synthetic import SyntheticDisc, iso_image, redumper_analysis_steps, redumper_log
 from test_mds_nrg import mds_descriptor
 
-from dinorefurb_disc_archiver import backends, dpm, dpmmeasure, pipeline
+from dinorefurb_disc_archiver import backends, cli, dpm, dpmmeasure, pipeline, scsi
 from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.disc import RAW_SECTOR, Disc, DiscError, Track
 from dinorefurb_disc_archiver.dpm import Dpm
-from dinorefurb_disc_archiver.dpmmeasure import DpmUnavailable, Settings, measure
+from dinorefurb_disc_archiver.dpmmeasure import DpmUnavailable, Settings, TocEntry, measure
 from dinorefurb_disc_archiver.pipeline import derive, open_source
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
@@ -518,6 +520,156 @@ class ArchiveTests(unittest.TestCase):
         with open_source(out / "mds" / "Game.mds", self.dir, silent_log) as copy:
             self.assertIsNone(copy.dpm)
 
+
+
+class SeparateMeasurementTests(unittest.TestCase):
+    """``disc-archiver dpm``: a dump made before is measured in a drive after the disc in it is
+    checked against the dump, and ``convert`` takes the measurement from beside the cue sheet."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._temp.name)
+        self.archival = self.dir / "archival"
+        self.archival.mkdir()
+        self.iso = iso_image()
+        self.sheet = SyntheticDisc(self.iso, audio_lengths=[200]).write_split(self.archival, "Game")
+        self.disc = read_cue(self.sheet)
+        self.drive = self.drive_for(self.disc, self.iso)
+        self.measured: list[tuple[int, int]] = []
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def drive_for(self, disc: Disc, iso: bytes, **options: object) -> FakeDrive:
+        """A drive holding the disc ``disc`` was read from: its TOC and the ISO's sectors."""
+        toc = [TocEntry(t.number, not t.is_audio, t.index1) for t in disc.tracks]
+        toc.append(TocEntry(dpmmeasure.LEAD_OUT, False, disc.total_sectors))
+        return FakeDrive(FakeDisc(), toc=toc, data=lambda lba: iso[lba * 2048 : (lba + 1) * 2048], **options)  # type: ignore[arg-type]
+
+    def fake_measure(self, drive, clock, first, end, settings, log):  # type: ignore[no-untyped-def]
+        self.measured.append((first, end))
+        record = {
+            "drive": drive.description,
+            "requestedSpeed": settings.speed,
+            "startSector": first,
+            "resolution": settings.resolution,
+            "passes": settings.passes,
+            "status": "measured",
+            "reason": None,
+            "entries": 3,
+            "statistics": {},
+            "warnings": [],
+        }
+        return dpmmeasure.Result(SAMPLE, record, {"steps": []})
+
+    def run_command(self, *extra: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(pipeline, "open_dpm_drive", return_value=(self.drive, self.drive.clock)),
+            mock.patch.object(dpmmeasure, "measure", side_effect=self.fake_measure),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            code = cli.main(["dpm", "--drive", "E:", "--input", str(self.sheet), *extra])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_dumped_disc_is_measured_and_convert_takes_the_measurement(self) -> None:
+        code, out, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_OK, err)
+        record = json.loads(out)
+        self.assertEqual(record["status"], "measured")
+        self.assertEqual(record["trigger"], "disc-archiver dpm was run")
+        self.assertEqual(record["drive"], "FAKE DPM-DRIVE 1.0")
+        self.assertEqual(record["file"], "Game.dpm.json")
+        check = record["separate"]["sameDisc"]
+        self.assertEqual((check["tracks"], check["leadOut"], check["sectorsNotRead"]), (2, self.disc.total_sectors, []))
+        self.assertGreaterEqual(check["sectorsCompared"], pipeline.SAME_DISC_MINIMUM)
+        self.assertIn(16, self.drive.data_reads)
+        self.assertEqual(self.measured, [(0, self.disc.tracks[0].end)])
+        sidecar = self.archival / "Game.dpm.json"
+        self.assertEqual(dpm.read_sidecar_record(sidecar), record)
+        with open_source(self.sheet, self.dir, silent_log) as disc:
+            self.assertEqual(disc.dpm, SAMPLE)
+
+    def test_a_disc_with_another_table_of_contents_is_refused_before_timing(self) -> None:
+        other = SyntheticDisc(self.iso, audio_lengths=[260]).write_split(self.dir, "Other")
+        self.drive = self.drive_for(read_cue(other), self.iso)
+        code, out, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_MISMATCH)
+        self.assertIn("not the dumped disc", err)
+        self.assertIn("lead-out", err)
+        self.assertEqual((out, self.measured), ("", []))
+        self.assertFalse((self.archival / "Game.dpm.json").exists())
+
+    def test_a_disc_with_the_same_layout_and_other_data_is_refused(self) -> None:
+        changed = bytearray(self.iso)
+        changed[16 * 2048 + 40 : 16 * 2048 + 50] = b"OTHER_DISC"
+        self.drive = self.drive_for(self.disc, bytes(changed))
+        code, _, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_MISMATCH)
+        self.assertIn("the user data of sector 16 differs", err)
+        self.assertEqual(self.measured, [])
+        self.assertFalse((self.archival / "Game.dpm.json").exists())
+
+    def test_sectors_either_side_could_not_read_are_left_out(self) -> None:
+        # Sector 0 of the dump lost its sync, as a sector the dump could not read; 16 fails in the drive.
+        track = self.archival / "Game (Track 1).bin"
+        raw = bytearray(track.read_bytes())
+        raw[0:12] = bytes(12)
+        track.write_bytes(bytes(raw))
+        self.drive = self.drive_for(self.disc, self.iso, failing=[16])
+        code, out, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_OK, err)
+        self.assertEqual(json.loads(out)["separate"]["sameDisc"]["sectorsNotRead"], [0, 16])
+
+    def test_too_few_readable_sectors_cannot_tell(self) -> None:
+        self.drive = self.drive_for(self.disc, self.iso, failing=range(self.disc.tracks[0].end))
+        with self.assertRaisesRegex(DiscError, "too few to tell"):
+            pipeline.check_same_disc(self.drive, self.disc, silent_log)
+
+    def test_a_measurement_beside_the_dump_is_kept_unless_replaced(self) -> None:
+        sidecar = self.archival / "Game.dpm.json"
+        sidecar.write_text("kept", encoding="utf-8")
+        code, _, err = self.run_command()
+        self.assertEqual(code, cli.EXIT_FAILED)
+        self.assertIn("--replace", err)
+        self.assertEqual(sidecar.read_text(encoding="utf-8"), "kept")
+        code, _, err = self.run_command("--replace")
+        self.assertEqual(code, cli.EXIT_OK, err)
+        self.assertEqual(dpm.read_sidecar(sidecar), SAMPLE)
+
+    def test_a_refused_measurement_exits_with_failure_and_keeps_its_record(self) -> None:
+        measured = self.fake_measure
+
+        def refused(drive, clock, first, end, settings, log):  # type: ignore[no-untyped-def]
+            result = measured(drive, clock, first, end, settings, log)
+            return dpmmeasure.Result(None, {**result.record, "status": "refused", "reason": "test"}, {})
+
+        with mock.patch.object(self, "fake_measure", refused):
+            code, out, _ = self.run_command()
+        self.assertEqual(code, cli.EXIT_FAILED)
+        self.assertEqual(json.loads(out)["status"], "refused")
+        self.assertIsNone(dpm.read_sidecar(self.archival / "Game.dpm.json"))
+
+    def test_only_a_cue_sheet_is_taken(self) -> None:
+        with self.assertRaisesRegex(DiscError, "not a cue sheet"):
+            pipeline.measure_dpm_separately("E:", self.dir / "Game.iso", Settings(), silent_log)
+
+
+class TocTests(unittest.TestCase):
+    def test_read_toc_data_is_parsed_into_tracks_and_the_lead_out(self) -> None:
+        descriptors = [(0x14, 1, 0), (0x10, 2, 293_168), (0x10, 0xAA, 303_000)]
+        body = b"".join(bytes([0, control, number, 0, *lba.to_bytes(4, "big")]) for control, number, lba in descriptors)
+        data = (len(body) + 2).to_bytes(2, "big") + bytes([1, 2]) + body + bytes(64)
+        self.assertEqual(
+            scsi.parse_toc(data),
+            [TocEntry(1, True, 0), TocEntry(2, False, 293_168), TocEntry(dpmmeasure.LEAD_OUT, False, 303_000)],
+        )
+
+    def test_the_timed_read_forces_unit_access_and_the_data_read_does_not(self) -> None:
+        self.assertEqual(scsi.read10(0x01020304)[:6], bytes([0x28, 0x08, 1, 2, 3, 4]))
+        self.assertEqual(scsi.read10(5, fua=False)[1], 0)
+        self.assertEqual(scsi.read_toc()[:2] + scsi.read_toc()[7:9], bytes([0x43, 0]) + scsi.TOC_BYTES.to_bytes(2, "big"))
 
 if __name__ == "__main__":
     unittest.main()

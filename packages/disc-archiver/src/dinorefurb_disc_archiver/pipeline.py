@@ -1159,24 +1159,156 @@ def measure_dpm(
     except DpmUnavailable as error:
         log(f"DPM: not measured: {error}")
         return {"trigger": cause, "status": "unavailable", "reason": str(error)}
+    try:
+        result = _time_reads(handle, clock, track, cause, settings, log)
+    finally:
+        _close(handle)
+    path = sidecar_path(dump)
+    record = {"trigger": cause, **result.record, "file": path.relative_to(output).as_posix()}
+    _keep_measurement(path, result, record, log)
+    if result.dpm is not None:
+        disc.dpm = result.dpm
+    return record
+
+
+def _time_reads(
+    handle: dpmmeasure.Drive, clock: Clock, track: Track, cause: str, settings: dpmmeasure.Settings, log: Log
+) -> dpmmeasure.Result:
     log(
         f"DPM: {cause}. Timing reads of the data track (sectors {track.index1} to {track.end - 1}) at {settings.speed}x "
         f"in {settings.passes} passes, which takes several minutes. Leave the computer idle meanwhile."
     )
-    try:
-        result = dpmmeasure.measure(handle, clock, track.index1, track.end, settings, log)
-    finally:
-        close = getattr(handle, "close", None)
-        if close is not None:
-            close()
-    path = sidecar_path(dump)
-    record = {"trigger": cause, **result.record, "file": path.relative_to(output).as_posix()}
+    return dpmmeasure.measure(handle, clock, track.index1, track.end, settings, log)
+
+
+def _close(handle: object) -> None:
+    close = getattr(handle, "close", None)
+    if close is not None:
+        close()
+
+
+def _keep_measurement(path: Path, result: dpmmeasure.Result, record: Mapping[str, object], log: Log) -> None:
     write_sidecar(path, result.dpm, record, result.details)
     if result.dpm is not None:
-        disc.dpm = result.dpm
         log(f"DPM: measured {len(result.dpm.angles)} steps; {path.name} keeps the measurement.")
     else:
         log(f"DPM: the measurement was refused, so no copy holds DPM data; {path.name} keeps what was measured.")
+
+
+class DifferentDisc(DiscError):
+    """The disc in the drive is not the one the dump was made from."""
+
+
+# Sectors of the first data track the same-disc check compares, spread from its start to its end,
+# besides the ISO 9660 primary volume descriptor at 16. A sector the dump or the drive could not
+# read is left out; at least SAME_DISC_MINIMUM have to be compared.
+SAME_DISC_SECTORS = 24
+SAME_DISC_MINIMUM = 8
+ISO_PVD_SECTOR = 16
+SEPARATE_TRIGGER = "disc-archiver dpm was run"
+
+
+def check_same_disc(handle: dpmmeasure.CheckedDrive, disc: Disc, log: Log) -> dict[str, object]:
+    """Check that the disc in ``handle`` is the one ``disc`` was dumped from.
+
+    The drive's table of contents has to give each track's number, kind (data or audio) and
+    INDEX 01 address as the dump has them, and its lead-out where the dump's last track ends.
+    Then the user data of the primary volume descriptor and of sectors spread over the first data
+    track has to equal the dump's. A sector either side could not read is left out.
+
+    Returns what was compared, for the measurement's record.
+
+    :raises DifferentDisc: the table of contents or a sector differs.
+    :raises DiscError: too few sectors could be read on both sides to tell.
+    """
+    differences: list[str] = []
+    try:
+        toc = handle.toc()
+    except dpmmeasure.DriveError as error:
+        raise DiscError(f"the drive did not give the disc's table of contents: {error}") from None
+    tracks = [e for e in toc if e.number != dpmmeasure.LEAD_OUT]
+    lead_out = next((e.lba for e in toc if e.number == dpmmeasure.LEAD_OUT), None)
+    found = [(e.number, "data" if e.data else "audio", e.lba) for e in tracks]
+    wanted = [(t.number, "audio" if t.is_audio else "data", t.index1) for t in disc.tracks]
+    if found != wanted:
+        differences.append(f"the drive's tracks are {_describe_toc(found)}; the dump's are {_describe_toc(wanted)}")
+    if lead_out != disc.total_sectors:
+        differences.append(f"the drive's lead-out starts at sector {lead_out}, the dump's at {disc.total_sectors}")
+    if differences:
+        raise DifferentDisc("the disc in the drive is not the dumped disc: " + "; ".join(differences))
+    track = disc.first_data_track()
+    last = track.length - 1
+    picks = sorted({ISO_PVD_SECTOR, *(i * last // (SAME_DISC_SECTORS - 1) for i in range(SAME_DISC_SECTORS))})
+    compared = 0
+    unread: list[int] = []
+    for index in picks:
+        if index > last:
+            continue
+        lba = track.index1 + index
+        try:
+            expected = track.user_data_at(index)
+            got = handle.read_data(lba)
+        except (NotDataSector, dpmmeasure.DriveError):
+            unread.append(lba)
+            continue
+        if got != expected:
+            differences.append(f"sector {lba}")
+        compared += 1
+    if differences:
+        raise DifferentDisc(
+            f"the disc in the drive is not the dumped disc: the user data of {', '.join(differences)} differs from the dump's"
+        )
+    if compared < SAME_DISC_MINIMUM:
+        raise DiscError(
+            f"only {compared} sectors could be read both in the drive and in the dump, too few to tell whether the disc "
+            f"in the drive is the dumped disc (sectors not read: {', '.join(map(str, unread))})"
+        )
+    log(f"DPM: the disc in the drive is the dumped disc: its table of contents and {compared} sectors match the dump.")
+    return {"tracks": len(tracks), "leadOut": lead_out, "sectorsCompared": compared, "sectorsNotRead": unread}
+
+
+def _describe_toc(tracks: list[tuple[int, str, int]]) -> str:
+    return ", ".join(f"{number} {kind} at {lba}" for number, kind, lba in tracks) or "none"
+
+
+def measure_dpm_separately(
+    drive: str, dump: Path, settings: dpmmeasure.Settings, log: Log, replace: bool = False
+) -> dict[str, object]:
+    """Measure the DPM of the disc in ``drive`` for a dump made before: ``disc-archiver dpm``.
+
+    ``dump`` is the cue sheet of the dump (``archival/<name>.cue``). The disc in the drive has to be
+    the dumped one (see :func:`check_same_disc`); then it is measured as a rip measures it, and
+    ``<name>.dpm.json`` is written beside the cue for ``convert`` to read. The record says the
+    measurement was made apart from the dump, with which archiver, and what the check compared.
+    Any drive will do, such as one that reads a scratched disc better than the one that dumped it.
+
+    Returns the record.
+
+    :raises DifferentDisc: the disc in the drive is another disc.
+    :raises DiscError: ``dump`` is not a cue sheet or has no data track, a measurement is already
+        beside it and ``replace`` is False, or the drive cannot be used.
+    """
+    settings.check()
+    if dump.suffix.lower() != ".cue":
+        raise DiscError(f"{dump.name} is not a cue sheet; give the cue sheet of the dump, archival/<name>.cue")
+    path = sidecar_path(dump)
+    if path.exists() and not replace:
+        raise DiscError(f"{path.name} already holds a measurement of this dump; pass --replace to measure again over it")
+    disc = read_cue(dump)
+    track = disc.first_data_track()
+    handle, clock = open_dpm_drive(drive)
+    try:
+        check = check_same_disc(handle, disc, log)  # type: ignore[arg-type]
+        result = _time_reads(handle, clock, track, SEPARATE_TRIGGER, settings, log)
+    finally:
+        _close(handle)
+    record = {
+        "trigger": SEPARATE_TRIGGER,
+        **result.record,
+        "file": path.name,
+        "separate": {"archiver": package_version(), "sameDisc": check},
+    }
+    _keep_measurement(path, result, record, log)
     return record
 
 

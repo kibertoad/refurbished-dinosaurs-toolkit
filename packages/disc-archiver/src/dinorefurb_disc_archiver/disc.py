@@ -240,6 +240,19 @@ class Track:
                     yield data
                 index += 1
 
+    def user_data_at(self, index: int) -> bytes:
+        """The 2,048-byte user data of the sector ``index`` sectors after INDEX 01.
+
+        Raises :class:`NotDataSector` when the stored sector holds no such data, as a sector the
+        dump could not read does.
+        """
+        if self.is_audio:
+            raise DiscError(f"track {self.number} is audio and has no user data")
+        if not 0 <= index < self.length:
+            raise DiscError(f"track {self.number}: sector {index} is outside the track")
+        sector = next(self._read(index, index + 1))
+        return sector if self.storage == "cooked" else user_data(sector, self.mode, self.index1 + index)
+
     def _read(self, first: int, stop: int) -> Iterator[bytes]:
         stored_first, _ = self.stored_range()
         size = self.stored_sector_size

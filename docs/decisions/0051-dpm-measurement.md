@@ -51,13 +51,24 @@ established dumper the archiver runs can measure DPM.
    formats list it as not held.
 6. Drive access is Windows' SCSI pass-through only (`scsi.py`). The archiver has no portable drive
    layer, so elsewhere the measurement is recorded as unavailable.
+7. `disc-archiver dpm` measures a disc dumped before, in any drive, and writes the `.dpm.json`
+   beside the dump's cue sheet for `convert` to read. A disc can be dumped in one drive and
+   measured in another that reads it better, and a rip made with `--dpm never` or whose
+   measurement was refused can be measured without dumping again. Since nothing ties the disc in
+   the drive to the dump any more, the command first compares the drive's table of contents
+   (tracks, their kind and INDEX 01 address, the lead-out) and the user data of the primary
+   volume descriptor and 24 sectors spread over the first data track with the dump's, and refuses
+   another disc. Its record says it was measured apart from the dump, with which archiver, and
+   what that check compared.
 
 ## Consequences
 
 - A person who owns a disc with SecuROM NEW can archive it once, in a form CDEmu runs today and
   rust-dos can read (dividebysandwich/rust-dos#628).
 - The archiver now sends SCSI commands to a drive, which it did not before. They are read-only
-  (INQUIRY, SET CD SPEED, READ(10)), and the speed is given back to the drive's maximum after.
+  (INQUIRY, SET CD SPEED, READ TOC, READ(10)), and the speed is given back to the drive's maximum
+  after. Only the same-disc check of `disc-archiver dpm` keeps the data it reads, to compare it
+  with the dump.
 - The method is written from public descriptions (the remarks of Aaru's `DpmMeasurement`, which
   cite US7463565B2), not from Aaru's GPL code, and has only been tested against a simulated drive. Whether a real drive's
   measurement passes SecuROM, and how it compares with Alcohol 120%'s and Aaru's of the same disc,

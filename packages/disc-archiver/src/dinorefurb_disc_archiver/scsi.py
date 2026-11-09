@@ -1,9 +1,9 @@
 """The drive the DPM measurement times: SCSI commands through Windows' pass-through.
 
-Windows only. ``IOCTL_SCSI_PASS_THROUGH_DIRECT`` on ``\\\\.\\E:`` sends INQUIRY, SET CD SPEED
-and READ(10) of one sector with Force Unit Access. The archiver has no other drive layer (its
-backends are programs), so on Linux and macOS :func:`open_drive` reports the measurement
-unavailable. See ADR 0051.
+Windows only. ``IOCTL_SCSI_PASS_THROUGH_DIRECT`` on ``\\\\.\\E:`` sends INQUIRY, SET CD SPEED,
+READ TOC and READ(10) of one sector, with Force Unit Access when the read is timed. The archiver
+has no other drive layer (its backends are programs), so on Linux and macOS :func:`open_drive`
+reports the measurement unavailable. See ADR 0051.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import ctypes
 import sys
 
-from .dpmmeasure import DpmUnavailable, DriveError
+from .dpmmeasure import DpmUnavailable, DriveError, TocEntry
 
 IOCTL_SCSI_PASS_THROUGH_DIRECT = 0x4D014
 SCSI_IOCTL_DATA_IN = 1
@@ -25,6 +25,8 @@ SECTOR_BYTES = 2048
 SENSE_BYTES = 32
 TIMEOUT_SECONDS = 20
 INQUIRY_BYTES = 36
+# READ TOC format 0: a 4-byte header and 8 bytes for each of up to 99 tracks and the lead-out.
+TOC_BYTES = 4 + 8 * 100
 
 
 class _PassThroughDirect(ctypes.Structure):
@@ -49,9 +51,27 @@ class _WithSense(ctypes.Structure):
     _fields_ = [("request", _PassThroughDirect), ("sense", ctypes.c_ubyte * SENSE_BYTES)]
 
 
-def read10(lba: int) -> bytes:
-    """READ(10) of one sector at ``lba`` with Force Unit Access (byte 1, bit 3)."""
-    return bytes([0x28, 0x08, *lba.to_bytes(4, "big"), 0, 0, 1, 0])
+def read10(lba: int, fua: bool = True) -> bytes:
+    """READ(10) of one sector at ``lba``, with Force Unit Access (byte 1, bit 3) unless ``fua`` is False."""
+    return bytes([0x28, 0x08 if fua else 0, *lba.to_bytes(4, "big"), 0, 0, 1, 0])
+
+
+def read_toc() -> bytes:
+    """READ TOC/PMA/ATIP format 0 from track 1, with addresses as LBAs."""
+    return bytes([0x43, 0, 0, 0, 0, 0, 1, *TOC_BYTES.to_bytes(2, "big"), 0])
+
+
+def parse_toc(data: bytes) -> list[TocEntry]:
+    """The tracks and the lead-out (number 0xAA) of READ TOC format 0 data.
+
+    Bit 2 of a descriptor's control nibble marks a data track.
+    """
+    length = int.from_bytes(data[0:2], "big") + 2
+    entries = []
+    for offset in range(4, min(length, len(data)) - 7, 8):
+        descriptor = data[offset : offset + 8]
+        entries.append(TocEntry(descriptor[2], bool(descriptor[1] & 0x04), int.from_bytes(descriptor[4:8], "big", signed=True)))
+    return entries
 
 
 def set_cd_speed(kilobytes_per_second: int) -> bytes:
@@ -143,6 +163,14 @@ class WindowsDrive:
     def read(self, lba: int) -> None:
         """Read one sector off the disc; the data is not kept."""
         self._command(read10(lba), SECTOR_BYTES)
+
+    def read_data(self, lba: int) -> bytes:
+        """The 2,048 bytes of user data of the data sector at ``lba``."""
+        return self._command(read10(lba, fua=False), SECTOR_BYTES)
+
+    def toc(self) -> list[TocEntry]:
+        """The disc's tracks and lead-out, as the drive's table of contents gives them."""
+        return parse_toc(self._command(read_toc(), TOC_BYTES))
 
     def close(self) -> None:
         """Give back the speed setting and close the drive."""
