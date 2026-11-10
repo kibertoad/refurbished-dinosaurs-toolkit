@@ -7,8 +7,8 @@
 `upload` always sends rip-manifest.json, PERSONAL-ARCHIVE-ONLY.txt and archival/ (without
 redumper's split .bin/.cue copies). bincue-split/ goes up only when `disc-archiver check --dat`
 gives `matched` for it, which means every track file equals one Redump entry's byte for byte and
-the cue sheet equals the entry's, at most after the archiver changes its FILE names, line endings
-or an all-zero CATALOG line. Anything else (partial, notListed, mismatched) skips bincue-split/ and
+the cue sheet equals the entry's, at most after the archiver changes its FILE names, line endings,
+all-zero ISRC lines or an all-zero CATALOG line. Anything else (partial, notListed, mismatched) skips bincue-split/ and
 exits 4 so the caller asks for manual validation. `--bincue-validated-by-hand` uploads it anyway, and is for
 when the user has validated the image and said so.
 
@@ -168,8 +168,8 @@ def gate(disc: Path, dat: Path | None) -> dict:
     """Compare bincue-split/ with the Redump DAT now, from the files on disk.
 
     Only ``matched`` passes, with every file of bincue-split/ compared. The archiver already counts a
-    cue sheet as matching when it differs from the DAT's only in FILE names, line endings or an
-    all-zero CATALOG line, and lists those under ``cueSheetChanges``.
+    cue sheet as matching when it differs from the DAT's only in FILE names, line endings, all-zero
+    ISRC lines or an all-zero CATALOG line, and lists those under ``cueSheetChanges``.
     """
     if dat is None:
         raise SystemExit("no Redump DAT: pass --dat or set REDUMP_DAT")
