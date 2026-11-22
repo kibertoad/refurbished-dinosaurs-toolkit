@@ -505,7 +505,7 @@ that does not match the decoded operand, an unsupported p-code operation and a d
 differs from Capstone's stop the path. Every report names both in `decoder` and
 `instructionSemantics`. `decoder` gives the version of the installed Capstone distribution, since
 the Capstone 5.0.8 and 5.0.9 bindings still report 5.0.7 as `capstone.__version__`. The engine
-refuses to build a report under any Capstone other than 5.0.9 or any pypcode other than 4.0.1.
+refuses to build a report under any Capstone other than 5.0.9 or any pypcode other than 4.1.0.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),

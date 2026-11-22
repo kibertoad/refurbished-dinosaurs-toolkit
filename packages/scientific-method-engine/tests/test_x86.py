@@ -4,6 +4,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -2992,13 +2993,14 @@ class ReporterTests(unittest.TestCase):
             self.assertIsNone(image_module.installed("capstone"))
 
     def test_pypcode_guard_refuses_another_sleigh_specification(self):
-        # Which flags the engine keeps after a shift is checked against pypcode 4.0.1's SLEIGH files;
+        # Which flags the engine keeps after a shift is checked against pypcode 4.1.0's SLEIGH files;
         # pypcode 4.0.0 writes the OF of SHR by one as 0.
         self.assertEqual(image_module.PYPCODE_VERSION, image_module.REQUIRED_PYPCODE)
         data = bytes.fromhex("c3")
-        with mock.patch.object(image_module, "PYPCODE_VERSION", "4.0.0"):
-            with self.assertRaisesRegex(ValueError, r"requires pypcode==4\.0\.1; pypcode 4\.0\.0 is installed"):
-                Image(data, configuration(data))
+        for other in ("4.0.0", "4.0.1"):
+            with self.subTest(pypcode=other), mock.patch.object(image_module, "PYPCODE_VERSION", other):
+                with self.assertRaisesRegex(ValueError, rf"requires pypcode==4\.1\.0; pypcode {re.escape(other)} is installed"):
+                    Image(data, configuration(data))
 
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
