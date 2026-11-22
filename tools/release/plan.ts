@@ -19,8 +19,16 @@
 //
 //   node tools/release/plan.ts set-version <pyproject.toml> <version>
 //     Writes the version into a pyproject.toml whose committed version is the 0.0.0 placeholder.
+//
+//   node tools/release/plan.ts check-published <project> <version> <dist-dir>
+//     Before a PyPI upload: fails when PyPI already has <version> of <project> and any of its
+//     files is missing from <dist-dir> or has a different SHA-256. The builds are reproducible,
+//     so a rerun of the same commit builds the same files and passes, and the upload's
+//     skip-existing then skips them; a different commit planned to the same version fails here.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { changedFiles, matchesPath } from "../lib/changed-files.ts";
 
 export interface ReleasedPackage {
@@ -139,6 +147,53 @@ export function setPyprojectVersion(text: string, version: string): string {
   const placeholder = /^version = "0\.0\.0"$/m;
   if (!placeholder.test(text)) throw new Error('pyproject.toml must keep the placeholder line version = "0.0.0"');
   return text.replace(placeholder, `version = "${version}"`);
+}
+
+export interface DistFile {
+  filename: string;
+  sha256: string;
+}
+
+/**
+ * Returns a line for each file PyPI already holds for a version that the local build lacks or
+ * built with a different SHA-256. An empty result means every published file is byte-identical
+ * to the local build, so uploading the build can only add the files PyPI lacks.
+ */
+export function publishedDifferences(local: DistFile[], published: DistFile[]): string[] {
+  const built = new Map(local.map((f) => [f.filename, f.sha256]));
+  const problems: string[] = [];
+  for (const file of published) {
+    const sha256 = built.get(file.filename);
+    if (sha256 === undefined) problems.push(`${file.filename} is on PyPI but was not built`);
+    else if (sha256 !== file.sha256)
+      problems.push(`${file.filename} on PyPI has SHA-256 ${file.sha256}; the build has ${sha256}`);
+  }
+  return problems;
+}
+
+async function checkPublished(project: string, version: string, distDir: string): Promise<void> {
+  const response = await fetch(`https://pypi.org/pypi/${project}/${version}/json`);
+  if (response.status === 404) {
+    console.log(`PyPI has no ${project} ${version}; the upload publishes it.`);
+    return;
+  }
+  if (!response.ok) throw new Error(`PyPI ${response.status} reading ${project} ${version}`);
+  const release = (await response.json()) as { urls: Array<{ filename: string; digests: { sha256: string } }> };
+  const published = release.urls.map((u) => ({ filename: u.filename, sha256: u.digests.sha256 }));
+  const local = readdirSync(distDir).map((filename) => ({
+    filename,
+    sha256: createHash("sha256")
+      .update(readFileSync(join(distDir, filename)))
+      .digest("hex"),
+  }));
+  const problems = publishedDifferences(local, published);
+  if (problems.length)
+    throw new Error(
+      `PyPI already has ${project} ${version} from another build, so this run must not publish or tag it:\n` +
+        problems.join("\n") +
+        `\nAnother commit was released as ${version} without its tag. See "A version on PyPI without its tag" in docs/releasing.md.`,
+    );
+  console.log(`PyPI already has ${project} ${version} with the files this run built; the upload skips them.`);
 }
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" });
@@ -264,8 +319,10 @@ async function main(argv: string[]): Promise<void> {
     writeFileSync(args[0]!, setPyprojectVersion(readFileSync(args[0]!, "utf8"), args[1]!));
     return;
   }
+  if (command === "check-published" && args.length === 3) return checkPublished(args[0]!, args[1]!, args[2]!);
   throw new Error(
-    "Usage: plan.ts check <base> <head> | release <package> <head> | set-version <pyproject.toml> <version>",
+    "Usage: plan.ts check <base> <head> | release <package> <head> | set-version <pyproject.toml> <version>" +
+      " | check-published <project> <version> <dist-dir>",
   );
 }
 

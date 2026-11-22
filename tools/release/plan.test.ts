@@ -8,6 +8,7 @@ import {
   gatedPackages,
   latestVersion,
   packageNamed,
+  publishedDifferences,
   releaseLabel,
   resolveMergedPull,
   setPyprojectVersion,
@@ -99,6 +100,18 @@ test("bumps reset the lower parts", () => {
 test("the pyproject version is written over the 0.0.0 placeholder only", () => {
   assert.equal(setPyprojectVersion('[project]\nversion = "0.0.0"\n', "1.4.0"), '[project]\nversion = "1.4.0"\n');
   assert.throws(() => setPyprojectVersion('[project]\nversion = "1.0.0"\n', "1.4.0"), /placeholder/);
+});
+
+test("a version on PyPI passes only when every published file matches the build", () => {
+  const wheel = { filename: "pkg-2.0.0-py3-none-any.whl", sha256: "aa" };
+  const sdist = { filename: "pkg-2.0.0.tar.gz", sha256: "bb" };
+  assert.deepEqual(publishedDifferences([wheel, sdist], [wheel, sdist]), []);
+  // An upload that stopped after the wheel: the rerun adds the sdist.
+  assert.deepEqual(publishedDifferences([wheel, sdist], [wheel]), []);
+  const other = publishedDifferences([wheel, sdist], [{ ...wheel, sha256: "cc" }, sdist]);
+  assert.equal(other.length, 1);
+  assert.match(other[0]!, /pkg-2\.0\.0-py3-none-any\.whl on PyPI has SHA-256 cc; the build has aa/);
+  assert.match(publishedDifferences([wheel], [wheel, sdist])[0]!, /pkg-2\.0\.0\.tar\.gz is on PyPI but was not built/);
 });
 
 test("the release takes the largest bump among the pull requests merged since the last tag", () => {

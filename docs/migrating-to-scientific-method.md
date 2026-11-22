@@ -46,7 +46,7 @@ semantics, publishes wheels only for 3.12 and later. Move CI and research enviro
 older Python to 3.12 in the same change.
 
 A requirements file that also pins the engine's dependencies pins the versions its engine release
-requires: `capstone==5.0.9`, `pypcode==4.1.0` and `xxhash==4.1.0` from engine 20.0.0,
+requires: `capstone==5.0.9`, `pypcode==4.1.0` and `xxhash==4.1.0` from engine 21.0.0,
 `capstone==5.0.9`, `pypcode==4.0.1` and `xxhash==4.0.1` from engine 18.0.0, and `capstone==5.0.7`,
 `pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` before it. None of them has runtime
 dependencies of its own. Under `pip install --require-hashes` every dependency needs its
@@ -628,7 +628,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
-| 20.0.0 | [pypcode 4.1.0 and xxhash 4.1.0](#engine-2000-pypcode-410-and-xxhash-410) |
+| 21.0.0 | [pypcode 4.1.0 and xxhash 4.1.0](#engine-2100-pypcode-410-and-xxhash-410) |
 | 20.0.0 | [Inventories carry the lift columns and keep their annotations](#engine-2000-inventories-carry-the-lift-columns-and-keep-their-annotations) |
 | 19.10.0 | [Related Ghidra queries can share one audited session](#engine-19100-related-ghidra-queries-can-share-one-audited-session) |
 | 19.0.0 | [`inventory-check` lists row starts at unresolved overlaps](#engine-1900-inventory-check-lists-row-starts-at-unresolved-overlaps) |
@@ -656,14 +656,15 @@ not in the table has no entry.
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
 
-### Engine 20.0.0: pypcode 4.1.0 and xxhash 4.1.0
+### Engine 21.0.0: pypcode 4.1.0 and xxhash 4.1.0
 
-The engine requires `pypcode==4.1.0` and `xxhash==4.1.0`, both up from 4.0.1. Capstone stays at
-5.0.9. pypcode 4.1.0 carries the x86 SLEIGH specification of Ghidra 12.2. A requirements file
-that pins the engine's dependencies changes both pins, with the hashes of their wheels under
-`--require-hashes`, in the same change as the engine pin. The engine refuses to build a report
-under any other pypcode with `This reporter requires pypcode==4.1.0; pypcode <version> is
-installed`.
+The engine requires `pypcode==4.1.0` and `xxhash==4.1.0`, both up from 4.0.1. Engine 20.0.0 on
+PyPI still requires `pypcode==4.0.1` and `xxhash==4.0.1`, so 21.0.0 is the first release with the
+new pins. Capstone stays at 5.0.9. pypcode 4.1.0 carries the x86 SLEIGH specification of Ghidra
+12.2. A requirements file that pins the engine's dependencies changes both pins, with the hashes
+of their wheels under `--require-hashes`, in the same change as the engine pin. The engine
+refuses to build a report under any other pypcode with `This reporter requires pypcode==4.1.0;
+pypcode <version> is installed`.
 
 Reports change in one way: `instructionSemantics` reads `pypcode 4.1.0 (Ghidra SLEIGH x86)`.
 Ghidra 12.2's specification no longer decodes the XSAVE family (XSAVE, XSAVEC, XSAVEOPT, XRSTOR

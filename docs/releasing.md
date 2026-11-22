@@ -67,8 +67,27 @@ it. Fix the labels on the merged pull request and re-run the workflow.
 
 The committed versions (`0.0.0` in `pyproject.toml` and `Directory.Build.props`) are placeholders.
 
+Before a PyPI upload, `plan.ts check-published` reads the planned version from PyPI. When PyPI
+already has it, every file there must be byte-identical to the file the job just built, or the job
+fails before uploading or tagging. The builds are reproducible (hatchling on Linux), so a rerun of
+the same commit builds the same files, while another commit planned to the same version does not.
+
 If the publish job fails after uploading, rerun the failed job: the plan's version is reused,
-the upload skips the existing version, and the tag and release are created.
+the check finds the same files on PyPI, the upload skips them, and the tag and release are created.
+
+### A version on PyPI without its tag
+
+The plan reads the latest tag, so a version uploaded without its tag is planned again by the next
+release run. That run's check fails, because it built another commit. To recover:
+
+1. Create the missing tag at the commit that was uploaded: rerun the failed publish job of the
+   run that uploaded it. If its tag step fails with `HTTP 403: Resource not accessible by
+   integration`, GitHub has likely refused the workflow's token a tag at a commit whose workflow
+   files differ from `main`'s. Create the release by hand instead, with
+   `gh release create <tag> --target <commit> --title <tag> --generate-notes`, and attach the
+   files from PyPI.
+2. Re-run all jobs of the run whose check failed, so that its plan starts from the new tag.
+   Re-running only the failed job reuses the old plan and fails again.
 
 ## One-time setup
 
