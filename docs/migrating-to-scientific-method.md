@@ -657,9 +657,13 @@ writes the seven columns the protocol names, `start`, `size`, `name`, `out_of_sc
 `lift` and `lift_reason`, and `inventory-check` reads `lift` and `lift_reason` as well as the other
 columns. An export needs these changes in the restoration:
 
-- Upgrade `@scientific-method/standard-checker` to the release that reads the lift columns before
-  committing an inventory this engine exports. An older checker cannot read it, so
+- Upgrade `@scientific-method/standard-checker` to 6.2.0 or later, which reads the lift columns,
+  before committing an inventory this engine exports. An older checker cannot read it, so
   `standard-coverage` fails and the range-end check skips it.
+- A previous inventory passed as the third argument must pass the same lift rules as
+  `inventory-check`: a row with `stuck` or `excluded` and no reason, a reason on another state,
+  a `lift_reason` column without `lift`, or a size that is not a plain positive number fails the
+  export.
 - To keep the names, out-of-scope reasons and lift states of an inventory you export again, move
   it and its `.provenance.tsv` and `.regions.tsv` aside (for example to `GAME.EXE.old.tsv`,
   `GAME.EXE.old.provenance.tsv` and `GAME.EXE.old.regions.tsv`) and pass the moved inventory as
