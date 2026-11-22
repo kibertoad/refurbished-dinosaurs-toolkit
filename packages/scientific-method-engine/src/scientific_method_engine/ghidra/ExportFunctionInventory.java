@@ -238,6 +238,9 @@ public class ExportFunctionInventory extends GhidraScript {
     /** The lift states a previous inventory may give. */
     private static final List<String> LIFT_STATES = List.of("none", "lifted", "verified", "stuck", "excluded");
 
+    /** The lift states whose row gives a reason in lift_reason. */
+    private static final List<String> LIFT_STATES_WITH_REASON = List.of("stuck", "excluded");
+
     /** One exported function before its annotations are added. */
     private record Row(String start, long size, String ranges) {
     }
@@ -276,11 +279,15 @@ public class ExportFunctionInventory extends GhidraScript {
         if (text.isEmpty()) {
             throw new IllegalArgumentException("The previous inventory has no header line: " + file);
         }
-        List<String> columns = List.of(text.get(0).replace("﻿", "").split("\t", -1));
+        List<String> columns = List.of(text.get(0).replace("\uFEFF", "").split("\t", -1));
         if (columns.size() < 2 || !columns.get(0).equals("start") || !columns.get(1).equals("size")
             || !COLUMNS.containsAll(columns) || columns.stream().distinct().count() != columns.size()) {
             throw new IllegalArgumentException("The previous inventory's columns are not start and size, then any of"
                 + " name, out_of_scope, ranges, lift and lift_reason, each once: " + file);
+        }
+        if (columns.contains("lift_reason") && !columns.contains("lift")) {
+            throw new IllegalArgumentException("The previous inventory has a lift_reason column without a lift column: "
+                + file);
         }
         Map<String, Annotation> rows = new LinkedHashMap<>();
         for (int k = 1; k < text.size(); k++) {
@@ -298,6 +305,18 @@ public class ExportFunctionInventory extends GhidraScript {
                 throw new IllegalArgumentException("Line " + (k + 1) + " of the previous inventory gives the lift state "
                     + (lift.isEmpty() ? "(empty)" : lift) + ", which is not one of " + String.join(", ", LIFT_STATES) + ": " + file);
             }
+            // The checkers refuse a state with a reason it does not take, or without one it needs, so such a
+            // row is refused here rather than carried into an inventory they cannot read.
+            boolean needsReason = LIFT_STATES_WITH_REASON.contains(lift);
+            if (needsReason == cell.getOrDefault("lift_reason", "").isEmpty()) {
+                throw new IllegalArgumentException("Line " + (k + 1) + " of the previous inventory gives the lift state "
+                    + lift + (needsReason ? " with no reason in lift_reason" : " with a reason in lift_reason, which only"
+                    + " stuck and excluded take") + ": " + file);
+            }
+            if (!cell.get("size").matches("[1-9][0-9]*")) {
+                throw new IllegalArgumentException("Line " + (k + 1) + " of the previous inventory gives the size "
+                    + cell.get("size") + ", which is not a positive number of bytes: " + file);
+            }
             Annotation row = new Annotation(cell.get("size"), cell.getOrDefault("ranges", ""), cell.getOrDefault("name", ""),
                 cell.getOrDefault("out_of_scope", ""), lift, cell.getOrDefault("lift_reason", ""));
             if (rows.putIfAbsent(cell.get("start"), row) != null) {
@@ -306,14 +325,20 @@ public class ExportFunctionInventory extends GhidraScript {
         }
         Map<String, String> liftProvenance = new LinkedHashMap<>();
         String name = file.getFileName().toString();
-        Path side = file.resolveSibling(name.substring(0, name.length() - 4) + ".provenance.tsv");
-        if (name.endsWith(".tsv") && Files.isRegularFile(side)) {
+        Path side = name.endsWith(".tsv")
+            ? file.resolveSibling(name.substring(0, name.length() - 4) + ".provenance.tsv") : null;
+        if (side != null && Files.isRegularFile(side)) {
             for (String line : Files.readAllLines(side, StandardCharsets.UTF_8)) {
                 String[] pair = line.split("\t", 2);
                 if (pair.length == 2 && pair[0].startsWith("lift_")) {
                     liftProvenance.put(pair[0], pair[1]);
                 }
             }
+        } else if (rows.values().stream().anyMatch(row -> !row.lift().equals("none"))) {
+            // The lift states are carried over, but the revisions they were checked with are not.
+            printerr("The previous inventory gives lift states, but no provenance file "
+                + (side == null ? "beside it, since its name does not end in .tsv" : side.toString())
+                + " gives the lift_ lines the states were checked with, so the new provenance has none.");
         }
         return new PreviousInventory(file, rows, liftProvenance);
     }
@@ -344,7 +369,8 @@ public class ExportFunctionInventory extends GhidraScript {
                 } else if (!before.lift().equals("none")) {
                     reset++;
                 }
-                if (before.annotated()) {
+                // A row whose only annotation was a lift state that was reset carried nothing over.
+                if (!name.isEmpty() || !outOfScope.isEmpty() || !lift.equals("none")) {
                     carried++;
                 }
             }
