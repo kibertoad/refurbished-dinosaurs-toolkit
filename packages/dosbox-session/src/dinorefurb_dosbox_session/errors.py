@@ -22,15 +22,20 @@ class ConfigurationRefused(SessionError):
 
 
 class LockHeld(SessionError):
-    """The machine-wide run lock is held, or its record cannot be read.
+    """rust-dos could not take its run lock within ``run_lock_wait`` and exited with code 3 before
+    it started its debug server.
 
-    :attr:`report` is the :class:`~dinorefurb_dosbox_session.lock.LockReport` that describes the
-    recorded owner and processes and which of them still run.
+    Another run holds the lock exclusive or waits for it, or this run asked for the lock exclusive
+    inside a shared hold of its caller. :attr:`directory` is the lock's folder, :attr:`mode` the
+    mode the session asked for (``shared`` or ``exclusive``) and :attr:`output` the lines rust-dos
+    printed about the lock, which name the holders it waited for.
     """
 
-    def __init__(self, message: str, report: Any) -> None:
+    def __init__(self, message: str, directory: Any, mode: str, output: tuple[str, ...]) -> None:
         super().__init__(message)
-        self.report = report
+        self.directory = directory
+        self.mode = mode
+        self.output = output
 
 
 class EmulatorLaunchFailed(SessionError):
@@ -139,7 +144,8 @@ class RunEnded(SessionError):
 
 
 class CleanupFailed(SessionError):
-    """The owned emulator was still running after teardown, so the run lock was kept.
+    """The owned emulator was still running after teardown, and it holds rust-dos's run lock until
+    it exits.
 
     :attr:`diagnostic` is the path of the cleanup diagnostic the session wrote.
     """

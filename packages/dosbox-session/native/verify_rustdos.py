@@ -86,7 +86,7 @@ def main() -> int:
     parser.add_argument("--emulator", type=Path, required=True)
     parser.add_argument("--emulator-sha256", help="refuse an executable with another SHA-256")
     parser.add_argument("--run-directory", type=Path, required=True)
-    parser.add_argument("--lock", type=Path, help="run lock path; by default the machine's")
+    parser.add_argument("--run-lock-dir", type=Path, help="run lock folder; by default the machine's")
     parser.add_argument("--deterministic", action="store_true", help="run in rust-dos's deterministic mode")
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds to observe each operation")
     arguments = parser.parse_args()
@@ -101,13 +101,14 @@ def main() -> int:
         target=Target(PROGRAM, ("/X",)),
         prepare_drive=lambda drive: (drive / PROGRAM).write_bytes(CODE),
         emulator_config=config,
-        lock_path=arguments.lock,
+        run_lock_directory=arguments.run_lock_dir,
     )
     checks: dict[str, object] = {}
     with RustDosSession(settings) as session:
         client = session.client
         assert session.entry is not None
         checks["entry"] = session.entry.get("cs_ip")
+        checks["run_lock"] = session.run_lock()
         environment = guest_environment(client, str(session.entry["registers"]["cs"]))
         checks["blaster"] = environment.get("BLASTER")
         checks["ultrasnd"] = environment.get("ULTRASND")

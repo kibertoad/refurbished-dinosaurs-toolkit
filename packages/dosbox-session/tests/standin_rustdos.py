@@ -10,7 +10,9 @@ of the `--config` file.
 Modes, comma-separated:
 
 - ready: answers as rust-dos does.
-- exit-early: exits with code 3 before printing its address.
+- exit-early: exits with code 1 before printing its address.
+- lock-held: prints the line rust-dos prints while it waits for the run lock and exits with code 3,
+  as rust-dos does when `--run-lock-wait` runs out.
 - config-warning: prints a warning about a line of the configuration file, as rust-dos does for a
   value it does not take.
 - awe32rom-warning: prints the warning rust-dos prints for an AWE32 ROM it cannot load, which
@@ -531,6 +533,11 @@ def main() -> int:
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--start-time")
     parser.add_argument("--audio-output", choices=("auto", "sdl", "null"))
+    # The session always passes the run lock options and --exit-with-parent.
+    parser.add_argument("--run-lock", required=True)
+    parser.add_argument("--run-lock-wait", type=int, required=True)
+    parser.add_argument("--run-lock-exclusive", action="store_true")
+    parser.add_argument("--exit-with-parent", type=int, required=True)
     arguments, extra = parser.parse_known_args()
     modes = set(arguments.standin_mode.split(","))
     drive_c = Path(arguments.drive_c)
@@ -547,6 +554,15 @@ def main() -> int:
     )
     Path(arguments.log).write_text("stand-in log\n", encoding="utf-8")
     if "exit-early" in modes:
+        time.sleep(0.2)
+        return 1
+    if "lock-held" in modes:
+        mode = "exclusive" if arguments.run_lock_exclusive else "shared"
+        print(
+            f"run-lock: waiting for the {mode} lock in {arguments.run_lock}: rust-dos-lock (pid 4242, exclusive, holding)",
+            file=sys.stderr,
+            flush=True,
+        )
         time.sleep(0.2)
         return 3
     if "config-warning" in modes:

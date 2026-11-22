@@ -229,7 +229,6 @@ class Refusals(RustDosCase):
     def test_a_server_without_strict_match_is_refused_at_the_start(self) -> None:
         with self.assertRaisesRegex(EmulatorRefused, "does not offer strict_match"):
             RustDosSession(self.settings("no-strict-match")).start()
-        self.assertFalse(self.lock_path.exists())
 
 
 @windows_only

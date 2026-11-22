@@ -6,15 +6,12 @@ build-backend = "hatchling.build"
 name = "dinorefurb-dosbox-session"
 # The release workflow writes the published version from the package's release tag.
 version = "0.0.0"
-description = "Owned rust-dos debugger sessions for clean-room restoration research: process, run lock, drives, records, observation, guarded writes, save states and an event log."
+description = "Owned rust-dos debugger sessions for clean-room restoration research: process, rust-dos run lock, drives, records, observation, guarded writes, save states and an event log."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "kibertoad" }]
 dependencies = []
-
-[project.scripts]
-dosbox-session = "dinorefurb_dosbox_session.cli:main"
 
 [project.urls]
 Source = "https://github.com/kibertoad/refurbished-dinosaurs-toolkit/tree/main/packages/dosbox-session"

@@ -1,8 +1,8 @@
 """An owned rust-dos debugger session: process, run lock, drives, records and operations (ADR 0040).
 
 rust-dos is a DOS emulator with a debug server built into its release binaries. The session runs
-it with its own C: and the machine-wide run lock, starts the target
-stopped at its entry, and tracks the operations it starts through the server's journal.
+it with its own C: and rust-dos's machine-wide run lock (ADR 0052), starts the target stopped at
+its entry, and tracks the operations it starts through the server's journal.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from .errors import (
     EmulatorExited,
     EmulatorLaunchFailed,
     EmulatorRefused,
+    LockHeld,
     OperationPending,
     PlatformRefused,
     ReadinessNotObserved,
@@ -42,7 +43,6 @@ from .errors import (
     WriteReadbackMismatch,
 )
 from .events import EventLogWriter
-from .lock import RunLock, resolve_lock_path
 from .hashing import file_sha256, sha256
 from .run import EventLogSettings, OwnedRun, RunState, Target, package_version
 from .rustdos_client import MemoryRead, Reply, RequestIds, RustDosClient
@@ -63,8 +63,24 @@ from .rustdos_states import (
 from .writes import FieldContract, VerifiedWrite, WritableField
 from .writes import _normalize_sha256 as normalize_sha256
 
-#: The ``format`` field of a rust-dos session's ``session.json``.
-RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
+#: The ``format`` field of a rust-dos session's ``session.json``. Format 2 records ``run_lock`` as
+#: an object; format 1 recorded the path of the lock file the package kept before 2.0.0.
+RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/2"
+
+#: The environment variable that names rust-dos's run lock folder. rust-dos reads it, and so does
+#: the session. Programs exclude each other only when they use the same folder, so set it to one
+#: folder for every account on the machine.
+RUN_LOCK_DIRECTORY_VARIABLE = "RUST_DOS_RUN_LOCK_DIR"
+
+#: The run lock folder the session passes when :data:`RUN_LOCK_DIRECTORY_VARIABLE` is not set. It
+#: is one folder for the machine, so sessions of different accounts exclude each other. rust-dos's
+#: own default is a folder per user.
+DEFAULT_RUN_LOCK_DIRECTORY = Path(r"C:\ProgramData\refurbished-dinosaurs\run-lock")
+
+# What a calling `rust-dos lock` sets for the programs it starts: the mode it holds the lock in.
+_RUN_LOCK_HELD_VARIABLE = "RUST_DOS_RUN_LOCK_HELD"
+# rust-dos's exit code for a run lock wait that ran out, or an exclusive take inside a shared hold.
+_RUN_LOCK_TIMED_OUT = 3
 
 #: The debug server API version the session speaks. rust-dos raises it only for a change that
 #: breaks clients.
@@ -148,7 +164,24 @@ _OWNED_OPTIONS = (
     "--relay",
     "--relay-password",
     "--no-boot",
+    "--no-run-lock",
+    "--run-lock",
+    "--run-lock-exclusive",
+    "--run-lock-wait",
+    "--exit-with-parent",
 )
+
+#: The modes ``RustDosSettings.run_lock`` takes.
+RunLockMode = Literal["shared", "exclusive"]
+
+
+def resolve_run_lock_directory(explicit: str | Path | None = None) -> Path:
+    """The run lock folder a session passes rust-dos: ``explicit`` when given, else
+    :data:`RUN_LOCK_DIRECTORY_VARIABLE`, else :data:`DEFAULT_RUN_LOCK_DIRECTORY`, made absolute."""
+    if explicit is None:
+        configured = os.environ.get(RUN_LOCK_DIRECTORY_VARIABLE)
+        explicit = configured if configured else DEFAULT_RUN_LOCK_DIRECTORY
+    return Path(os.path.abspath(explicit))
 
 #: How an operation ended, as ``/api/ops`` reports it.
 OperationState = Literal["pending", "stopped", "done", "failed", "superseded", "cancelled"]
@@ -257,7 +290,15 @@ class RustDosSettings:
       the target's files there. It may not write ``AUTOEXEC.BAT`` or the readiness marker.
     - ``emulator_arguments``: further rust-dos options, such as ``("--core", "normal")``. Options the
       session sets itself are refused.
-    - ``lock_path``: the run lock; by default the path :func:`~dinorefurb_dosbox_session.lock.resolve_lock_path` gives.
+    - ``run_lock``: how rust-dos takes its machine-wide run lock. ``shared`` (the default) runs
+      beside other shared runs. ``exclusive`` (``--run-lock-exclusive``) runs alone, for timing
+      measurements and runs that use the desktop.
+    - ``run_lock_directory``: the lock's folder; by default the one
+      :func:`resolve_run_lock_directory` gives. Set it for tests only: runs that use other folders
+      do not exclude each other.
+    - ``run_lock_wait``: whole seconds rust-dos waits for the lock (``--run-lock-wait``) before it
+      exits and the session raises :class:`LockHeld`. At least 1, since rust-dos reads 0 as no
+      limit.
     - ``event_log``: when given, the session keeps an event log, ``events.jsonl`` in the run directory.
     - ``start_state``: a checkpoint of an earlier run (see :func:`read_saved_state`) to start from
       in place of starting the target. C: is a copy of the one the checkpoint kept, and the session
@@ -274,7 +315,9 @@ class RustDosSettings:
     prepare_drive: Callable[[Path], None] | None = None
     emulator_config: RustDosConfig = field(default_factory=RustDosConfig)
     emulator_arguments: tuple[str, ...] = ()
-    lock_path: Path | None = None
+    run_lock: RunLockMode = "shared"
+    run_lock_directory: Path | None = None
+    run_lock_wait: int = 5
     readiness_timeout: float = 30.0
     teardown_timeout: float = 10.0
     event_log: EventLogSettings | None = None
@@ -332,6 +375,13 @@ def _check_config(settings: RustDosSettings) -> None:
         option = argument.split("=", 1)[0]
         if option in _OWNED_OPTIONS:
             raise ConfigurationRefused(f"The session sets {option} itself; it cannot be in emulator_arguments.")
+    if settings.run_lock not in ("shared", "exclusive"):
+        raise ConfigurationRefused(f"run_lock {settings.run_lock!r} must be shared or exclusive.")
+    wait = settings.run_lock_wait
+    if isinstance(wait, bool) or not isinstance(wait, int) or wait < 1:
+        raise ConfigurationRefused(
+            f"run_lock_wait {wait!r} must be a whole number of seconds of at least 1; rust-dos reads 0 as no limit."
+        )
     if config.start_time is not None and not config.deterministic:
         raise ConfigurationRefused("start_time is the deterministic clock's start; it is only taken with deterministic.")
     if config.deterministic and (config.cycles is None or not config.cycles.strip().isdigit()):
@@ -482,11 +532,13 @@ class RustDosSession(OwnedRun):
 
     Use it as a context manager. Entering refuses a platform other than Windows, an executable
     that is missing or has another hash than ``emulator_sha256``, settings the session owns, a run
-    directory that is not empty, and a held run lock. It then takes the run lock, creates an empty
-    C: with an ``AUTOEXEC.BAT`` that writes the readiness marker, launches rust-dos with its debug
-    server on a free local port, checks the server's API version and features, mounts the media
-    read-only, waits for the marker and starts the target stopped at its entry. Leaving quits the
-    emulator, ends it if it does not exit, and releases the lock only when it has exited.
+    directory that is not empty. It then creates an empty C: with an ``AUTOEXEC.BAT`` that writes
+    the readiness marker and launches rust-dos with its debug server on a free local port, its run
+    lock in the session's folder and mode, and ``--exit-with-parent`` on this process. rust-dos takes
+    the lock before it starts the server; a lock it cannot take within ``run_lock_wait`` raises
+    :class:`LockHeld`. The session then checks the server's API version and features, mounts the
+    media read-only, waits for the marker and starts the target stopped at its entry. Leaving quits
+    the emulator and ends it if it does not exit. rust-dos holds the lock until it exits.
 
     With ``start_state`` it copies C: from the checkpoint in place of creating it, and in place of
     starting the target it pauses the machine once the guest has written the marker (a
@@ -498,7 +550,8 @@ class RustDosSession(OwnedRun):
         self.token = uuid.uuid4().hex[:12]
         self.run_directory = Path(settings.run_directory).resolve()
         self.drive_c = self.run_directory / _DRIVE_C
-        self.lock_path = resolve_lock_path(settings.lock_path)
+        #: The run lock folder rust-dos is given.
+        self.run_lock_directory = resolve_run_lock_directory(settings.run_lock_directory)
         self.emulator_sha256: str | None = None
         #: The debug server's ``/api/version`` answer.
         self.server: Mapping[str, Any] | None = None
@@ -513,7 +566,6 @@ class RustDosSession(OwnedRun):
         self.readiness: Literal["not observed", "observed"] = "not observed"
         self.mounted: dict[str, Any] = {}
         self._arguments: list[str] = []
-        self._lock: RunLock | None = None
         self._process: processes.OwnedProcess | None = None
         self._emulator_identity: processes.ProcessIdentity | None = None
         self._owner: processes.ProcessIdentity | None = None
@@ -544,7 +596,7 @@ class RustDosSession(OwnedRun):
         if sys.platform != "win32":
             raise PlatformRefused(
                 f"rust-dos sessions are supported on Windows only (this platform is {sys.platform}): the owned "
-                "process and the run lock are verified there alone."
+                "process is verified there alone."
             )
         settings = self.settings
         emulator = Path(settings.emulator).resolve()
@@ -577,7 +629,6 @@ class RustDosSession(OwnedRun):
         self._check_run_directory()
         self._owner = processes.current()
         create_log = self._prepare_log()
-        self._lock = RunLock.acquire(self.lock_path, self.token, self._owner)
         try:
             if create_log is not None:
                 self._log = create_log(self.run_directory / _EVENT_LOG)
@@ -636,6 +687,13 @@ class RustDosSession(OwnedRun):
             arguments.append("--deterministic")
             if config.start_time is not None:
                 arguments += ["--start-time", config.start_time]
+        # --run-lock makes rust-dos exit when it cannot take the lock, where it would otherwise run
+        # without it. The job object ends rust-dos with this process; --exit-with-parent does too.
+        arguments += ["--run-lock", str(self.run_lock_directory), "--run-lock-wait", str(settings.run_lock_wait)]
+        if settings.run_lock == "exclusive":
+            arguments.append("--run-lock-exclusive")
+        assert self._owner is not None
+        arguments += ["--exit-with-parent", str(self._owner.pid)]
         self._arguments = arguments
         environment = dict(os.environ)
         if not config.show_window:
@@ -648,8 +706,6 @@ class RustDosSession(OwnedRun):
         except OSError as error:
             raise EmulatorLaunchFailed(f"The emulator {emulator} could not be started: {error}") from error
         self._emulator_identity = self._process.identity
-        assert self._lock is not None
-        self._lock.record("emulator", self._emulator_identity)
         self._write_record()
 
     def _copy_drive(self, state: SavedState) -> None:
@@ -690,8 +746,12 @@ class RustDosSession(OwnedRun):
             raise ReadinessNotObserved(f"{waiting_for} did not happen within {self.settings.readiness_timeout} s.")
 
     def _connect(self) -> None:
-        """Finds the server's address in the emulator's output and checks its version and features."""
-        deadline = time.monotonic() + self.settings.readiness_timeout
+        """Finds the server's address in the emulator's output and checks its version and features.
+
+        rust-dos takes the run lock before it starts the server, so the wait for the address
+        includes the lock's wait, and an exit with code 3 before the address is the lock's.
+        """
+        deadline = time.monotonic() + self.settings.readiness_timeout + self.settings.run_lock_wait
         output = self.run_directory / EMULATOR_OUTPUT
         while True:
             try:
@@ -701,7 +761,15 @@ class RustDosSession(OwnedRun):
             found = _LISTENING.search(printed)
             if found is not None:
                 break
-            self._deadline_passed(deadline, "the debug server printed its address")
+            assert self._process is not None
+            code = self._process.poll()
+            if code is not None:
+                self._exited_before_server(code, output)
+            if time.monotonic() >= deadline:
+                raise ReadinessNotObserved(
+                    f"The debug server did not print its address within {self.settings.readiness_timeout} s "
+                    f"after the run lock's wait of {self.settings.run_lock_wait} s."
+                )
             time.sleep(0.05)
         # rust-dos reads its configuration file before it starts the server, so its warnings
         # about the file are printed by now.
@@ -743,6 +811,36 @@ class RustDosSession(OwnedRun):
         missing = [name for name in needed if not isinstance(features, list) or name not in features]
         if missing:
             raise EmulatorRefused(f"The debug server does not offer {', '.join(missing)}, which the session relies on.")
+
+    def _exited_before_server(self, code: int, output: Path) -> None:
+        """Raises :class:`LockHeld` for rust-dos's lock exit code, else :class:`EmulatorExited`,
+        each with the lines rust-dos printed about the run lock."""
+        try:
+            printed = output.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            printed = ""
+        lines = tuple(line.strip() for line in printed.splitlines() if line.strip().startswith("run-lock:"))
+        said = "" if not lines else " rust-dos said: " + " | ".join(lines)
+        mode = self.settings.run_lock
+        if code == _RUN_LOCK_TIMED_OUT:
+            raise LockHeld(
+                f"rust-dos did not get the {mode} run lock in {self.run_lock_directory} within "
+                f"{self.settings.run_lock_wait} s and exited with code 3 before it started.{said}",
+                self.run_lock_directory,
+                mode,
+                lines,
+            )
+        raise EmulatorExited(f"The emulator exited with code {code} before the debug server printed its address.{said}")
+
+    def _held_by_caller(self) -> str | None:
+        """The mode a calling ``rust-dos lock`` holds the session's lock folder in, which rust-dos
+        inherits in place of taking the lock, or ``None``."""
+        held = os.environ.get(_RUN_LOCK_HELD_VARIABLE, "").strip()
+        directory = os.environ.get(RUN_LOCK_DIRECTORY_VARIABLE)
+        if held not in ("shared", "exclusive") or not directory:
+            return None
+        same = os.path.normcase(os.path.abspath(directory)) == os.path.normcase(str(self.run_lock_directory))
+        return held if same else None
 
     def _mount_media(self) -> None:
         for media in self.settings.emulator_config.media:
@@ -1278,7 +1376,7 @@ class RustDosSession(OwnedRun):
             "endpoint": self.endpoint,
             "arguments": list(self._arguments),
             "emulator_log": str(self.run_directory / EMULATOR_LOG),
-            "run_lock": str(self.lock_path),
+            "run_lock": self.run_lock(),
             "owner_process": None if self._owner is None else self._owner.to_json(),
             "emulator_process": None if self._emulator_identity is None else self._emulator_identity.to_json(),
             "host_sound": "kept" if config.keep_host_sound else "muted",
@@ -1302,6 +1400,17 @@ class RustDosSession(OwnedRun):
             "event_log": None if self._log is None else str(self._log.path),
         }
 
+    def run_lock(self) -> dict[str, Any]:
+        """The run lock as ``session.json`` and the event log header record it: the ``mode``, the
+        ``directory``, ``wait_seconds`` and ``held_by_caller``, the mode a calling ``rust-dos lock``
+        holds the same folder in (rust-dos then inherits that hold), or ``None``."""
+        return {
+            "mode": self.settings.run_lock,
+            "directory": str(self.run_lock_directory),
+            "wait_seconds": self.settings.run_lock_wait,
+            "held_by_caller": self._held_by_caller(),
+        }
+
     def _write_record(self) -> None:
         path = self.run_directory / _SESSION_RECORD
         path.write_text(json.dumps(self.record(), indent=2) + "\n", encoding="utf-8")
@@ -1309,12 +1418,12 @@ class RustDosSession(OwnedRun):
     # Teardown
 
     def close(self) -> None:
-        """Quits the emulator, ends it if it does not exit, then releases the run lock.
+        """Quits the emulator and ends it if it does not exit. rust-dos lets its run lock go as it exits.
 
-        When the emulator is still running afterwards, writes ``cleanup-diagnostic.txt``, keeps the
-        run lock and raises :class:`CleanupFailed`; calling ``close`` again once the process has
-        exited releases the lock. The emulator runs in a job that Windows ends when this process
-        ends, so it never outlives its owner.
+        When the emulator is still running afterwards, writes ``cleanup-diagnostic.txt`` and raises
+        :class:`CleanupFailed`; call ``close`` again once the process has exited. The emulator runs
+        in a job that Windows ends when this process ends, and with ``--exit-with-parent``, so it
+        never outlives its owner.
         """
         if self._closed:
             return
@@ -1340,9 +1449,9 @@ class RustDosSession(OwnedRun):
         diagnostic = self.run_directory / _CLEANUP_DIAGNOSTIC
         if alive:
             errors.append(
-                f"Emulator process {process.pid} is still running. The run lock {self.lock_path} was kept; "  # type: ignore[union-attr]
-                "once the process has exited, close the session again. If this program ends first, Windows "
-                "ends the emulator with it, and the stale-lock command then removes the lock."
+                f"Emulator process {process.pid} is still running and holds the run lock in "  # type: ignore[union-attr]
+                f"{self.run_lock_directory}; once the process has exited, close the session again. If this "
+                "program ends first, Windows ends the emulator with it."
             )
         if errors and self.run_directory.exists():
             diagnostic.write_text("\n\n".join(errors) + "\n", encoding="utf-8")
@@ -1352,9 +1461,6 @@ class RustDosSession(OwnedRun):
         self._closed = True
         if process is not None:
             process.close()
-        if self._lock is not None:
-            self._lock.release()
-            self._lock = None
 
 
 def _hex(data: bytes) -> str:

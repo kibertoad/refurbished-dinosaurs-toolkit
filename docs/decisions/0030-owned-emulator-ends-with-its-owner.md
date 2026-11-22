@@ -1,7 +1,9 @@
 # ADR 0030: the owned emulator ends with its owner
 
 Status: accepted. Refines decision 3 of
-[ADR 0026](0026-dosbox-x-session-package.md) for `dinorefurb-dosbox-session`.
+[ADR 0026](0026-dosbox-x-session-package.md) for `dinorefurb-dosbox-session`. The job object
+stands; [ADR 0052](0052-rust-dos-run-lock.md) removes the lock file and the `stale-lock` command
+this record describes.
 
 ## Context
 

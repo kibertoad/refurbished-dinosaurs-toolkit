@@ -25,13 +25,13 @@ PROBE = bytes.fromhex("B83412" "BB7856" "A11001" "B8004C" "CD21" "0000" "CDAB")
 
 
 class RustDosCase(unittest.TestCase):
-    """A temporary directory and a private lock path for sessions against the stand-in rust-dos."""
+    """A temporary directory and a private run lock folder for sessions against the stand-in rust-dos."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.lock_path = self.root / "locks" / "run.lock"
+        self.run_lock_directory = self.root / "run-lock"
         self.runs = 0
 
     def settings(
@@ -53,7 +53,7 @@ class RustDosCase(unittest.TestCase):
             target=Target("PROBE.COM"),
             prepare_drive=prepare,
             emulator_config=config or RustDosConfig(),
-            lock_path=self.lock_path,
+            run_lock_directory=self.run_lock_directory,
             readiness_timeout=readiness_timeout,
         )
         return dataclasses.replace(settings, **changes)  # type: ignore[arg-type]
