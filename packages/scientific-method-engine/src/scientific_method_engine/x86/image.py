@@ -24,7 +24,7 @@ REQUIRED_CAPSTONE = "5.0.9"
 # The engine's rules for which flags to keep are checked against this SLEIGH specification, such as
 # the OF of SHR, which pypcode 4.0.0 writes as 0 where 4.0.1 writes the CPU's value.
 PYPCODE_VERSION = pypcode.__version__
-REQUIRED_PYPCODE = "4.0.1"
+REQUIRED_PYPCODE = "4.1.0"
 MAX_SOURCE = 256 * 1024 * 1024
 XXH3_FORM = re.compile("[0-9a-f]{32}")
 
