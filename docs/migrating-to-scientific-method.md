@@ -594,6 +594,10 @@ value.
 
 ## Session package upgrades
 
+### dinorefurb-dosbox-session 1.1.0: rust-dos v1.9.2
+
+The session now pins rust-dos [v1.9.2](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.9.2). Download `rust-dos-v1.9.2-windows-x86_64.zip`, keep its DLLs beside `rust-dos.exe` (the release runs on SDL3 and ships `SDL3.dll` in place of `SDL2.dll`), and pass `RUST_DOS_PINNED_SHA256`, which now refuses the v1.8.1 executable. A checkpoint saved under v1.8.1 records that executable's SHA-256, so a v1.9.2 run refuses to start from it (`EmulatorRefused`); save it again under v1.9.2. The session's options, `RustDosConfig` and the `[sound]` values it accepts are unchanged.
+
 ### dinorefurb-dosbox-session 1.0.0: rust-dos only
 
 The package runs rust-dos sessions only ([ADR 0050](decisions/0050-rust-dos-only-sessions.md)). DOSBox-X sessions, their save states and gated breakpoints are gone, without aliases. Package 0.11.0 is the last release with them; a restoration that can't port a probe yet pins it.
