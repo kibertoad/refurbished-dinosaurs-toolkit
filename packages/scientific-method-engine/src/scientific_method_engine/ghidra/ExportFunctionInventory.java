@@ -1,4 +1,4 @@
-// Exports every function's start, size and body ranges in the Standard's notation, with provenance and regions files.
+// Exports every function's start, size and body ranges in the Standard's notation, with provenance and regions files, carrying over a previous inventory's annotations.
 // @category Restoration
 
 import java.io.BufferedWriter;
@@ -56,10 +56,12 @@ public class ExportFunctionInventory extends GhidraScript {
     @Override
     protected void run() throws Exception {
         String[] arguments = getScriptArgs();
-        if (arguments.length != 2) {
+        if (arguments.length != 2 && arguments.length != 3) {
             throw new IllegalArgumentException(
-                "Supply the output inventory path, ending in .tsv, and the identifier of the database snapshot it reads.");
+                "Supply the output inventory path, ending in .tsv, the identifier of the database snapshot it reads,"
+                    + " and optionally the previous inventory whose annotations it carries over.");
         }
+        PreviousInventory previous = arguments.length == 3 ? readPrevious(Path.of(arguments[2])) : null;
         Path output = Path.of(arguments[0]).toAbsolutePath().normalize();
         String name = output.getFileName().toString();
         if (!name.endsWith(".tsv") || name.endsWith(".provenance.tsv") || name.endsWith(".regions.tsv")) {
@@ -87,11 +89,16 @@ public class ExportFunctionInventory extends GhidraScript {
 
         notation = notation();
         Map<String, String> source = provenance(snapshot);
+        if (previous != null) {
+            // The lift revisions say which generator, checker and harness the lift states were checked
+            // with, so they go with the states that are carried over.
+            source.putAll(previous.liftProvenance());
+        }
 
         // Every row is built before anything is written, so a function that cannot be placed refuses
         // the whole export and no inventory with a smaller denominator appears.
         Memory memory = currentProgram.getMemory();
-        List<String> rows = new ArrayList<>();
+        List<Row> rows = new ArrayList<>();
         Map<String, Address> starts = new LinkedHashMap<>();
         AddressSet bodies = new AddressSet();
         List<Address> entries = new ArrayList<>();
@@ -144,10 +151,11 @@ public class ExportFunctionInventory extends GhidraScript {
                 ranges = String.join(" ", written);
                 withRanges++;
             }
-            rows.add(first.startText() + "\t" + size + "\t" + ranges);
+            rows.add(new Row(first.startText(), size, ranges));
             bytes += size;
         }
 
+        List<String> lines = annotate(rows, previous);
         List<String> regionRows = regionRows(memory, bodies, entries);
 
         if (!problems.isEmpty()) {
@@ -158,7 +166,7 @@ public class ExportFunctionInventory extends GhidraScript {
                 printerr("Output stopped after " + MAX_PROBLEM_LINES + " of " + problems.size() + " problems.");
             }
             throw new IllegalStateException((problems.size() == 1 ? "1 problem keeps" : problems.size() + " problems keep")
-                + " the inventory and its regions from being written in the Standard's notation. Nothing was written.");
+                + " the inventory and its regions from being written. Nothing was written.");
         }
 
         Files.createDirectories(output.getParent());
@@ -170,9 +178,9 @@ public class ExportFunctionInventory extends GhidraScript {
             provenancePart = Files.createTempFile(output.getParent(), "provenance-", ".partial");
             regionsPart = Files.createTempFile(output.getParent(), "regions-", ".partial");
             try (BufferedWriter writer = Files.newBufferedWriter(inventoryPart, StandardCharsets.UTF_8)) {
-                writer.write("start\tsize\tranges\n");
-                for (String row : rows) {
-                    writer.write(row);
+                writer.write(String.join("\t", COLUMNS) + "\n");
+                for (String line : lines) {
+                    writer.write(line);
                     writer.write('\n');
                 }
             }
@@ -218,7 +226,139 @@ public class ExportFunctionInventory extends GhidraScript {
         }
         println("Exported " + rows.size() + " functions with " + bytes + " body bytes, " + withRanges
             + " of them with a ranges column, to " + output + ", their provenance to " + provenance + ", and "
-            + regionRows.size() + " region and anomaly rows to " + regions);
+            + regionRows.size() + " region and anomaly rows to " + regions
+            + (previous == null ? "" : ". From " + previous.path() + " it carried over the annotations of "
+                + carried + " functions and reset the lift state of " + reset + " whose body changed"));
+    }
+
+    /** The inventory's columns, in the order the work protocol gives them. */
+    private static final List<String> COLUMNS =
+        List.of("start", "size", "name", "out_of_scope", "ranges", "lift", "lift_reason");
+
+    /** The lift states a previous inventory may give. */
+    private static final List<String> LIFT_STATES = List.of("none", "lifted", "verified", "stuck", "excluded");
+
+    /** One exported function before its annotations are added. */
+    private record Row(String start, long size, String ranges) {
+    }
+
+    /** One row of a previous inventory: its body as written, and the annotations a researcher gave it. */
+    private record Annotation(String size, String ranges, String name, String outOfScope, String lift,
+        String liftReason) {
+        /** Whether a researcher wrote anything into the row. */
+        boolean annotated() {
+            return !name.isEmpty() || !outOfScope.isEmpty() || !lift.equals("none");
+        }
+    }
+
+    /** A previous inventory: its path, its rows by start, and the lift lines of its provenance file. */
+    private record PreviousInventory(Path path, Map<String, Annotation> rows, Map<String, String> liftProvenance) {
+    }
+
+    private long carried;
+    private long reset;
+
+    /**
+     * Reads the inventory a new export replaces. Its first line names its columns, start and size first,
+     * then any of name, out_of_scope, ranges, lift and lift_reason. A row without a lift column has the
+     * state none. The provenance file beside it, if there is one, gives the lift_ lines the new provenance
+     * keeps.
+     */
+    private PreviousInventory readPrevious(Path path) throws Exception {
+        Path file = path.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(file) || Files.size(file) > MAX_FILE) {
+            throw new IllegalArgumentException("The previous inventory must be a regular file of at most 256 MiB: " + file);
+        }
+        List<String> text = Files.readAllLines(file, StandardCharsets.UTF_8);
+        while (!text.isEmpty() && text.get(text.size() - 1).isEmpty()) {
+            text.remove(text.size() - 1);
+        }
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("The previous inventory has no header line: " + file);
+        }
+        List<String> columns = List.of(text.get(0).replace("﻿", "").split("\t", -1));
+        if (columns.size() < 2 || !columns.get(0).equals("start") || !columns.get(1).equals("size")
+            || !COLUMNS.containsAll(columns) || columns.stream().distinct().count() != columns.size()) {
+            throw new IllegalArgumentException("The previous inventory's columns are not start and size, then any of"
+                + " name, out_of_scope, ranges, lift and lift_reason, each once: " + file);
+        }
+        Map<String, Annotation> rows = new LinkedHashMap<>();
+        for (int k = 1; k < text.size(); k++) {
+            String[] cells = text.get(k).split("\t", -1);
+            if (cells.length != columns.size()) {
+                throw new IllegalArgumentException("Line " + (k + 1) + " of the previous inventory has " + cells.length
+                    + " cells, not " + columns.size() + ": " + file);
+            }
+            Map<String, String> cell = new LinkedHashMap<>();
+            for (int c = 0; c < cells.length; c++) {
+                cell.put(columns.get(c), cells[c].trim());
+            }
+            String lift = cell.getOrDefault("lift", "none");
+            if (!LIFT_STATES.contains(lift)) {
+                throw new IllegalArgumentException("Line " + (k + 1) + " of the previous inventory gives the lift state "
+                    + (lift.isEmpty() ? "(empty)" : lift) + ", which is not one of " + String.join(", ", LIFT_STATES) + ": " + file);
+            }
+            Annotation row = new Annotation(cell.get("size"), cell.getOrDefault("ranges", ""), cell.getOrDefault("name", ""),
+                cell.getOrDefault("out_of_scope", ""), lift, cell.getOrDefault("lift_reason", ""));
+            if (rows.putIfAbsent(cell.get("start"), row) != null) {
+                throw new IllegalArgumentException("The previous inventory lists " + cell.get("start") + " twice: " + file);
+            }
+        }
+        Map<String, String> liftProvenance = new LinkedHashMap<>();
+        String name = file.getFileName().toString();
+        Path side = file.resolveSibling(name.substring(0, name.length() - 4) + ".provenance.tsv");
+        if (name.endsWith(".tsv") && Files.isRegularFile(side)) {
+            for (String line : Files.readAllLines(side, StandardCharsets.UTF_8)) {
+                String[] pair = line.split("\t", 2);
+                if (pair.length == 2 && pair[0].startsWith("lift_")) {
+                    liftProvenance.put(pair[0], pair[1]);
+                }
+            }
+        }
+        return new PreviousInventory(file, rows, liftProvenance);
+    }
+
+    /**
+     * The inventory's lines with the previous inventory's annotations. A row keeps the name and the reason
+     * it is out of scope that the previous inventory gives its start. It keeps the lift state and reason
+     * only where its size and ranges are as before, since a lifted function translated other code where
+     * the body changed, and otherwise has the state none. A previous row with an annotation and a start
+     * no exported function has is a problem: the work protocol asks for it to be reconciled before the
+     * new inventory replaces the old.
+     */
+    private List<String> annotate(List<Row> rows, PreviousInventory previous) {
+        List<String> lines = new ArrayList<>();
+        Map<String, Annotation> unmatched = new LinkedHashMap<>(previous == null ? Map.of() : previous.rows());
+        for (Row row : rows) {
+            Annotation before = unmatched.remove(row.start());
+            String name = "";
+            String outOfScope = "";
+            String lift = "none";
+            String liftReason = "";
+            if (before != null) {
+                name = before.name();
+                outOfScope = before.outOfScope();
+                if (before.size().equals(Long.toString(row.size())) && before.ranges().equals(row.ranges())) {
+                    lift = before.lift();
+                    liftReason = before.liftReason();
+                } else if (!before.lift().equals("none")) {
+                    reset++;
+                }
+                if (before.annotated()) {
+                    carried++;
+                }
+            }
+            lines.add(String.join("\t", row.start(), Long.toString(row.size()), name, outOfScope, row.ranges(), lift,
+                liftReason));
+        }
+        for (Map.Entry<String, Annotation> gone : unmatched.entrySet()) {
+            if (gone.getValue().annotated()) {
+                problems.add("The previous inventory annotates the function at " + gone.getKey()
+                    + ", which no function starts at now. Reconcile its name, out-of-scope reason or lift state in"
+                    + " the previous inventory, as the work protocol asks, and export again.");
+            }
+        }
+        return lines;
     }
 
     /** The Standard's address notation for this program, or an exception naming why it has none here. */

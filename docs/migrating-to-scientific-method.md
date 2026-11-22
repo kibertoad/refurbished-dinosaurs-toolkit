@@ -623,6 +623,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 20.0.0 | [Inventories carry the lift columns and keep their annotations](#engine-2000-inventories-carry-the-lift-columns-and-keep-their-annotations) |
 | 19.10.0 | [Related Ghidra queries can share one audited session](#engine-19100-related-ghidra-queries-can-share-one-audited-session) |
 | 19.0.0 | [`inventory-check` lists row starts at unresolved overlaps](#engine-1900-inventory-check-lists-row-starts-at-unresolved-overlaps) |
 | 18.0.0 | [Capstone 5.0.9 and pypcode 4.0.1](#engine-1800-capstone-509-and-pypcode-401) |
@@ -648,6 +649,27 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 20.0.0: inventories carry the lift columns and keep their annotations
+
+Work protocol 2 gives every function in an inventory a lift state. `ExportFunctionInventory` now
+writes the seven columns the protocol names, `start`, `size`, `name`, `out_of_scope`, `ranges`,
+`lift` and `lift_reason`, and `inventory-check` reads `lift` and `lift_reason` as well as the other
+columns. An export needs these changes in the restoration:
+
+- Upgrade `@scientific-method/standard-checker` to the release that reads the lift columns before
+  committing an inventory this engine exports. An older checker cannot read it, so
+  `standard-coverage` fails and the range-end check skips it.
+- To keep the names, out-of-scope reasons and lift states of an inventory you export again, move
+  it and its `.provenance.tsv` and `.regions.tsv` aside (for example to `GAME.EXE.old.tsv`,
+  `GAME.EXE.old.provenance.tsv` and `GAME.EXE.old.regions.tsv`) and pass the moved inventory as
+  the script's third argument. A row keeps the name and reason its start had. It keeps its lift
+  state only where its size and ranges are unchanged, and otherwise has `none`. The `lift_` lines
+  of the moved provenance file go into the new one. An annotated row whose start no function has
+  any more fails the export, which then writes nothing: reconcile that row in the moved inventory
+  first, as the protocol asks.
+- Without the third argument every row has an empty name and reason and the state `none`, as a
+  first export should.
 
 ### Engine 19.10.0: related Ghidra queries can share one audited session
 

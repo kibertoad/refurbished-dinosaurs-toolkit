@@ -252,6 +252,27 @@ Standard's notation for the program:
 from the start; otherwise it lists every range of the body, half-open `start..end`, in address order
 and separated by spaces.
 
+The inventory has the seven columns the work protocol names: `start`, `size`, `name`,
+`out_of_scope`, `ranges`, `lift` and `lift_reason`. A first export leaves `name`, `out_of_scope`
+and `lift_reason` empty and gives every function the lift state `none`. To export a file again
+without losing what researchers wrote into its inventory, move the old inventory and its side files
+aside and pass the moved inventory as a third argument:
+
+```powershell
+& $analyzeHeadless $projectRoot Restoration -process 'GAME.EXE' -readOnly -noanalysis `
+  -scriptPath (scientific-method-engine ghidra-scripts) `
+  -postScript ExportFunctionInventory.java 'coverage/BLD-CD-EN-1.0/@CD/GAME.EXE.tsv' 'game-2026-11-22' `
+  'coverage/BLD-CD-EN-1.0/@CD/GAME.EXE.old.tsv'
+```
+
+Each function keeps the name and out-of-scope reason the old inventory gave its start. It keeps its
+lift state and reason only where its size and ranges are unchanged, since the lifted function
+translated other code where the body changed, and otherwise has `none`. The `lift_` lines of the
+old provenance file, the revisions the lift states were checked with, go into the new one. An old
+row with a name, a reason or a state other than `none` at a start no function has any more fails
+the export, which then writes nothing; the protocol asks for such a row to be reconciled first.
+Delete the moved files once the new inventory is committed.
+
 Beside the inventory, the script writes `<file>.provenance.tsv`, one name and value per line:
 
 | Name | Value |
