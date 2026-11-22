@@ -28,11 +28,11 @@ rust-dos serves its debugger over HTTP and JSON on a local port, in its normal r
 The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
 `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`, `quit`, `build`,
 `strict_match` and `check_files` (`RUST_DOS_FEATURES`). The supported release is
-[v1.8.1](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.8.1)
-(`RUST_DOS_PINNED_TAG`), commit `3bdb0eff305cf827c07414ce30b9616ef450562c`.
-Download `rust-dos-v1.8.1-windows-x86_64.zip` and keep the DLLs it holds (`SDL2.dll`, `mt32emu-2.dll`, `openxr_loader.dll`) beside `rust-dos.exe`.
-The archive's SHA-256 is `d6d02f5e771d8a176593de1a7f549fb748c0871bdd5e074eb350d900de026c1a`;
-the executable's is `e880ecf0d76dbb2f77e4d1d7568d90cb53f3d1cf798679cd24f025955bf85da0`
+[v1.9.2](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.9.2)
+(`RUST_DOS_PINNED_TAG`), commit `a83155500f8c57136a486dc9b914d515ff9b60e1`.
+Download `rust-dos-v1.9.2-windows-x86_64.zip` and keep the DLLs it holds (`SDL3.dll`, `mt32emu-2.dll`, `openxr_loader.dll`) beside `rust-dos.exe`.
+The archive's SHA-256 is `53f2c77cb537241c516d821dd98022ee2c8bf29a960b9fc9591a2ff37c9427d9`;
+the executable's is `e08b4a7a08c381cb55381639e6d9cf6e452399f1ab5ff3276a722bcfd4e7fcf3`
 (`RUST_DOS_PINNED_SHA256`). These hashes apply to that ZIP, not the Win7, MSI or libretro builds.
 Pass the executable pin explicitly; `emulator_sha256=None` still permits other builds that
 satisfy the API and feature checks, and the session records their actual hash. The session passes `--audio-output`, which rust-dos takes from v1.8.1, so an earlier build exits at start and the session raises `EmulatorExited`.
