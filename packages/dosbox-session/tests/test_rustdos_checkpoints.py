@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 from dinorefurb_dosbox_session import (
@@ -176,7 +177,7 @@ class Checkpoints(RustDosCase):
             RustDosSession(self.from_state(state, media)).start()
         self.assertEqual(raised.exception.status, 409)
         self.assertTrue(any(d.startswith("drive D:") for d in raised.exception.differences), raised.exception.differences)
-        # The lock was released: a run with the media of the save starts.
+        # The failed run ended its emulator: a run with the media of the save starts.
         with RustDosSession(self.from_state(state)) as session:
             self.assertIsNotNone(session.start_state)
 
@@ -187,3 +188,17 @@ class Checkpoints(RustDosCase):
             read_saved_state(self.root / "nowhere", state.name)
         with self.assertRaisesRegex(StateRefused, "saved no state named 'other'"):
             read_saved_state(run, "other")
+
+    def test_read_saved_state_reads_a_record_in_format_1(self) -> None:
+        state = self.checkpoint()
+        run = state.directory.parent.parent
+        record_path = run / "session.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["format"] = "dinorefurb-dosbox-session.rust-dos-record/1"
+        record["run_lock"] = str(self.root / "run.lock")
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(read_saved_state(run, state.name).files, state.files)
+        record["format"] = "dinorefurb-dosbox-session.rust-dos-record/9"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(StateRefused, "is not a rust-dos session record"):
+            read_saved_state(run, state.name)

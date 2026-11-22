@@ -39,8 +39,6 @@ from dinorefurb_dosbox_session import (
     WriteOutsideContract,
     read_event_log,
 )
-from dinorefurb_dosbox_session import processes
-from dinorefurb_dosbox_session.lock import RunLock
 
 from support import RustDosCase, windows_only
 
@@ -357,6 +355,12 @@ class Reading(LogCase):
             ([first, header, outcome], 1, "Line 1 .* holds the event record where the log header belongs"),
             ([json_line({**header_record, "format": "dinorefurb-dosbox-session.event-log/9"}), outcome], 1, "event-log/9"),
             ([json_line({**header_record, "extra": 1}), outcome], 1, "has \\['extra'\\] it should not"),
+            ([json_line({**header_record, "run_lock": "shared"}), outcome], 1, "the run lock is not an object"),
+            (
+                [json_line({**header_record, "format": "dinorefurb-dosbox-session.event-log/1"}), outcome],
+                1,
+                "has \\['run_lock'\\] it should not",
+            ),
             ([json_line({**header_record, "outcome_contract": unversioned}), outcome], 1, "positive integer version"),
             ([header, first, outcome, first], 4, "follows the outcome"),
             ([header, first, header, outcome], 3, "second header"),
@@ -368,6 +372,18 @@ class Reading(LogCase):
             with self.subTest(message):
                 rewrite(self.path, content)
                 self.assertEqual(self.assert_rejected(LogMalformed, message).line, line)
+
+    def test_a_log_in_format_1_reads_back_without_a_run_lock(self) -> None:
+        self.complete_log()
+        header, *rest, outcome = lines(self.path)
+        old = {**json.loads(header), "format": "dinorefurb-dosbox-session.event-log/1"}
+        del old["run_lock"]
+        old_header = json_line(old)
+        old_outcome = json_line({**json.loads(outcome), "header_sha256": hashlib.sha256(old_header).hexdigest()})
+        rewrite(self.path, [old_header, *rest, old_outcome])
+        log = read_event_log(self.path, OUTCOME)
+        self.assertIsNone(log.run_lock)
+        self.assertEqual(len(log.events), 3)
 
     def test_an_oversized_log_is_rejected_before_it_is_parsed(self) -> None:
         self.complete_log()
@@ -405,6 +421,11 @@ class SessionLogs(RustDosCase):
         log = read_event_log(log_path, OUTCOME)
         self.assertEqual(log.session, session.token)
         self.assertEqual(header["session"], session.token)
+        self.assertEqual(header["format"], "dinorefurb-dosbox-session.event-log/2")
+        self.assertEqual(header["run_lock"], record["run_lock"])
+        self.assertEqual(log.run_lock, record["run_lock"])
+        self.assertEqual(log.run_lock["mode"], "shared")
+        self.assertEqual(log.run_lock["directory"], str(self.run_lock_directory))
         self.assertEqual(len(log.events), 2)
         support = Path(sys.modules["support"].__file__).resolve()  # type: ignore[arg-type]
         self.assertEqual(log.modules[0].sha256, hashlib.sha256(support.read_bytes()).hexdigest())
@@ -415,22 +436,15 @@ class SessionLogs(RustDosCase):
         settings = self.log_settings(modules=("support", "synthetic_never_imported"))
         with self.assertRaisesRegex(ModuleRefused, "synthetic_never_imported is not imported"):
             RustDosSession(settings).start()
-        self.assertFalse(self.lock_path.exists())
         self.assertFalse((settings.run_directory / "events.jsonl").exists())
         self.assertFalse((settings.run_directory / "drive-c").exists())
 
-    def test_a_held_lock_refuses_the_session_and_leaves_the_run_directory_reusable(self) -> None:
-        holder = RunLock.acquire(self.lock_path, "other-session", processes.current())
-        settings = self.log_settings()
-        try:
-            with self.assertRaises(LockHeld):
-                RustDosSession(settings).start()
-            self.assertEqual(list(settings.run_directory.iterdir()), [])
-        finally:
-            holder.release()
-        with RustDosSession(settings) as session:
-            session.finish_log(OUTCOME)
-        read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
+    def test_a_run_lock_rust_dos_cannot_take_ends_the_log_as_failed(self) -> None:
+        settings = self.log_settings(mode="lock-held")
+        with self.assertRaises(LockHeld):
+            RustDosSession(settings).start()
+        with self.assertRaisesRegex(OutcomeFailed, "The session did not start: rust-dos did not get the shared run lock"):
+            read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_once_the_log_has_its_outcome_the_guest_is_not_resumed_or_changed(self) -> None:
         for end in ("finish", "fail"):
@@ -494,7 +508,7 @@ class SessionLogs(RustDosCase):
         settings = self.log_settings(mode="exit-early")
         with self.assertRaises(EmulatorExited):
             RustDosSession(settings).start()
-        with self.assertRaisesRegex(OutcomeFailed, "The session did not start: .*code 3"):
+        with self.assertRaisesRegex(OutcomeFailed, "The session did not start: .*code 1"):
             read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_session_without_an_event_log_refuses_events(self) -> None:

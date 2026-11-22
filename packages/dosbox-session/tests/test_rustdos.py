@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -38,10 +39,8 @@ from dinorefurb_dosbox_session import (
     WriteOutsideContract,
     WriteReadbackMismatch,
     read_event_log,
-    read_lock,
 )
 from dinorefurb_dosbox_session import processes
-from dinorefurb_dosbox_session.lock import RunLock
 
 from support import RustDosCase, windows_only
 
@@ -69,8 +68,6 @@ class StartAndStop(RustDosCase):
             assert session.entry is not None
             self.assertEqual(session.entry["reason"], "program_start")
             self.assertEqual(session.entry["program"]["name"], "PROBE.COM")
-            lock = read_lock(self.lock_path)
-            self.assertEqual([p.role for p in lock.processes], ["owner", "emulator"])
             assert session._process is not None
             self.assertTrue(session._process.in_job())
             self.assertEqual(session.client.read_memory("05AA:0110", 2).data, WORD_BEFORE)
@@ -79,12 +76,20 @@ class StartAndStop(RustDosCase):
             emulator = session.emulator_process
             assert emulator is not None
             autoexec = (session.drive_c / "AUTOEXEC.BAT").read_bytes()
-        self.assertFalse(self.lock_path.exists())
         self.assertEqual(processes.process_state(emulator), "exited")
         self.assertFalse((settings.run_directory / "cleanup-diagnostic.txt").exists())
         self.assertEqual(autoexec, f"@echo off\r\necho {data['session']}> C:\\DRREADY.TXT\r\n".encode("ascii"))
 
-        self.assertEqual(data["format"], "dinorefurb-dosbox-session.rust-dos-record/1")
+        self.assertEqual(data["format"], "dinorefurb-dosbox-session.rust-dos-record/2")
+        self.assertEqual(
+            data["run_lock"],
+            {
+                "mode": "shared",
+                "directory": str(self.run_lock_directory),
+                "wait_seconds": 5,
+                "held_by_caller": None,
+            },
+        )
         self.assertEqual(data["backend"], "rust-dos")
         self.assertEqual(len(data["emulator"]["sha256"]), 64)
         self.assertEqual(data["server"]["api_version"], 1)
@@ -121,6 +126,39 @@ class StartAndStop(RustDosCase):
             "[sound]\nsbtype=sb16\nsbbase=220\nirq=7\ndma=1\nhdma=5\ngus=true\ngusbase=240\ngusirq=5\ngusdma=3\n",
         )
         self.assertTrue((settings.run_directory / "rust-dos.log").exists())
+        self.assertEqual(arguments[arguments.index("--run-lock") + 1], str(self.run_lock_directory))
+        self.assertEqual(arguments[arguments.index("--run-lock-wait") + 1], "5")
+        self.assertNotIn("--run-lock-exclusive", arguments)
+        self.assertEqual(arguments[arguments.index("--exit-with-parent") + 1], str(data["owner_process"]["pid"]))
+
+    def test_an_exclusive_run_lock_is_passed_and_recorded(self) -> None:
+        settings = self.settings(run_lock="exclusive", run_lock_wait=2)
+        with RustDosSession(settings) as session:
+            data = record(session)
+        self.assertIn("--run-lock-exclusive", standin(settings)["argv"])
+        self.assertEqual(data["arguments"][data["arguments"].index("--run-lock-wait") + 1], "2")
+        self.assertEqual(data["run_lock"]["mode"], "exclusive")
+        self.assertEqual(data["run_lock"]["wait_seconds"], 2)
+
+    def test_the_run_lock_folder_comes_from_the_setting_then_the_variable_then_the_default(self) -> None:
+        from dinorefurb_dosbox_session import DEFAULT_RUN_LOCK_DIRECTORY, resolve_run_lock_directory
+
+        with mock.patch.dict(os.environ, {"RUST_DOS_RUN_LOCK_DIR": r"D:\locks\run-lock"}):
+            self.assertEqual(resolve_run_lock_directory(), Path(r"D:\locks\run-lock"))
+            self.assertEqual(resolve_run_lock_directory(r"E:\other"), Path(r"E:\other"))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_run_lock_directory(), DEFAULT_RUN_LOCK_DIRECTORY)
+        self.assertEqual(DEFAULT_RUN_LOCK_DIRECTORY, Path(r"C:\ProgramData\refurbished-dinosaurs\run-lock"))
+
+    def test_a_hold_of_a_calling_rust_dos_lock_on_the_same_folder_is_recorded(self) -> None:
+        held = {"RUST_DOS_RUN_LOCK_HELD": "exclusive", "RUST_DOS_RUN_LOCK_DIR": str(self.run_lock_directory)}
+        with mock.patch.dict(os.environ, held):
+            with RustDosSession(self.settings()) as session:
+                self.assertEqual(record(session)["run_lock"]["held_by_caller"], "exclusive")
+        other = {"RUST_DOS_RUN_LOCK_HELD": "shared", "RUST_DOS_RUN_LOCK_DIR": str(self.root / "elsewhere")}
+        with mock.patch.dict(os.environ, other):
+            with RustDosSession(self.settings()) as session:
+                self.assertIsNone(record(session)["run_lock"]["held_by_caller"])
 
     def test_the_sound_cards_are_passed_in_the_config_file_and_recorded(self) -> None:
         # A synthetic stand-in for the AWE32's ROM: the session passes and hashes it without reading it.
@@ -172,7 +210,6 @@ class StartAndStop(RustDosCase):
     def test_a_config_file_rust_dos_warns_about_fails_the_start(self) -> None:
         with self.assertRaisesRegex(EmulatorRefused, r"did not take rust-dos\.conf .*line 3: invalid sbbase.*share IRQ 5"):
             RustDosSession(self.settings("config-warning")).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_an_awe32_rom_rust_dos_could_not_load_fails_the_start(self) -> None:
         rom = self.root / "awe32.raw"
@@ -180,7 +217,6 @@ class StartAndStop(RustDosCase):
         settings = self.settings("awe32rom-warning", config=RustDosConfig(sound_blaster=SoundBlaster("awe32", rom=rom)))
         with self.assertRaisesRegex(EmulatorRefused, r"did not take rust-dos\.conf .*awe32rom: 16 bytes"):
             RustDosSession(settings).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_a_window_and_host_sound_are_kept_only_when_asked_for(self) -> None:
         settings = self.settings(config=RustDosConfig(keep_host_sound=True, show_window=True))
@@ -201,7 +237,6 @@ class StartAndStop(RustDosCase):
     def test_a_target_that_does_not_reach_its_entry_in_time_is_not_ready(self) -> None:
         with self.assertRaisesRegex(ReadinessNotObserved, "did not reach its entry"):
             RustDosSession(self.settings("no-entry")).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_media_are_mounted_read_only_and_recorded(self) -> None:
         cd = self.root / "cd"
@@ -217,7 +252,6 @@ class StartAndStop(RustDosCase):
         config = RustDosConfig(media=(Media("D", self.root, "directory"),))
         with self.assertRaisesRegex(SessionError, "not mounted read-only"):
             RustDosSession(self.settings("mount-writable", config=config)).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_a_deterministic_session_queues_the_target_behind_the_batch_file(self) -> None:
         settings = self.settings(config=RustDosConfig(cycles="10000", deterministic=True, start_time="1995-01-02 03:04:05"))
@@ -242,12 +276,10 @@ class StartAndStop(RustDosCase):
         config = RustDosConfig(cycles="10000", deterministic=True)
         with self.assertRaisesRegex(ReadinessNotObserved, "before the guest wrote"):
             RustDosSession(self.settings("never-ready", config=config)).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_another_program_at_the_entry_fails_the_start(self) -> None:
         with self.assertRaisesRegex(SessionError, "did not stop at its entry"):
             RustDosSession(self.settings("wrong-program")).start()
-        self.assertFalse(self.lock_path.exists())
 
 
 @windows_only
@@ -256,7 +288,6 @@ class Refusals(RustDosCase):
         settings = self.settings(emulator_sha256=RUST_DOS_PINNED_SHA256)
         with self.assertRaisesRegex(EmulatorRefused, "not the expected"):
             RustDosSession(settings).start()
-        self.assertFalse(self.lock_path.exists())
         self.assertFalse(settings.run_directory.exists())
 
     def test_the_expected_hash_lets_the_same_executable_start(self) -> None:
@@ -277,6 +308,15 @@ class Refusals(RustDosCase):
             ({"emulator_arguments": ("--config", "other.conf")}, "sets --config itself"),
             ({"emulator_arguments": ("--no-config",)}, "sets --no-config itself"),
             ({"emulator_arguments": ("--audio-output=sdl",)}, "sets --audio-output itself"),
+            ({"emulator_arguments": ("--no-run-lock",)}, "sets --no-run-lock itself"),
+            ({"emulator_arguments": ("--run-lock", "D:\\x")}, "sets --run-lock itself"),
+            ({"emulator_arguments": ("--run-lock-exclusive",)}, "sets --run-lock-exclusive itself"),
+            ({"emulator_arguments": ("--run-lock-wait=0",)}, "sets --run-lock-wait itself"),
+            ({"emulator_arguments": ("--exit-with-parent",)}, "sets --exit-with-parent itself"),
+            ({"run_lock": "measure"}, "must be shared or exclusive"),
+            ({"run_lock_wait": 0}, "at least 1"),
+            ({"run_lock_wait": 2.5}, "whole number"),
+            ({"run_lock_wait": True}, "whole number"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster("sb1"))}, "model 'sb1' is not one rust-dos takes"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x225))}, r"base 0x225 .*0x210, 0x220"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x290))}, "base 0x290"),
@@ -301,7 +341,6 @@ class Refusals(RustDosCase):
                 settings = self.settings(**changes)  # type: ignore[arg-type]
                 with self.assertRaisesRegex(ConfigurationRefused, message):
                     RustDosSession(settings).start()
-                self.assertFalse(self.lock_path.exists())
 
     def test_a_target_command_line_with_a_line_break_is_refused(self) -> None:
         from dinorefurb_dosbox_session import Target
@@ -330,7 +369,6 @@ class Refusals(RustDosCase):
 
         with self.assertRaisesRegex(RunDirectoryRefused, "AUTOEXEC.BAT"):
             RustDosSession(self.settings(prepare_drive=prepare)).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_a_run_directory_with_files_is_refused(self) -> None:
         settings = self.settings()
@@ -345,7 +383,6 @@ class Refusals(RustDosCase):
                 session = RustDosSession(self.settings(mode))
                 with self.assertRaisesRegex(EmulatorRefused, message):
                     session.start()
-                self.assertFalse(self.lock_path.exists())
                 assert session.emulator_process is not None
                 self.assertEqual(processes.process_state(session.emulator_process), "exited")
 
@@ -353,29 +390,34 @@ class Refusals(RustDosCase):
         session = RustDosSession(self.settings("no-version", readiness_timeout=30))
         with self.assertRaisesRegex(EmulatorRefused, "does not answer /api/version"):
             session.start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_an_emulator_that_exits_before_its_server_answers_fails(self) -> None:
-        with self.assertRaisesRegex(EmulatorExited, "code 3 before the debug server printed its address"):
+        with self.assertRaisesRegex(EmulatorExited, "code 1 before the debug server printed its address"):
             RustDosSession(self.settings("exit-early")).start()
-        self.assertFalse(self.lock_path.exists())
 
     def test_a_server_that_never_gives_its_address_or_a_guest_that_never_writes_the_marker_is_not_ready(self) -> None:
         # never-ready has to start and print its address within the timeout first, so it gets
         # longer: a loaded machine can take more than a second to start the stand-in.
-        for mode, message, timeout in (("silent", "printed its address", 1.5), ("never-ready", "wrote DRREADY.TXT", 5.0)):
+        for mode, message, timeout in (("silent", "print its address", 1.5), ("never-ready", "wrote DRREADY.TXT", 5.0)):
             with self.subTest(mode=mode):
                 with self.assertRaisesRegex(ReadinessNotObserved, message):
                     RustDosSession(self.settings(mode, readiness_timeout=timeout)).start()
-                self.assertFalse(self.lock_path.exists())
 
-    def test_a_held_run_lock_refuses_the_session(self) -> None:
-        holder = RunLock.acquire(self.lock_path, "other-session", processes.current())
-        self.addCleanup(holder.release)
-        settings = self.settings()
-        with self.assertRaises(LockHeld):
-            RustDosSession(settings).start()
-        self.assertFalse((settings.run_directory / "drive-c").exists())
+    def test_a_run_lock_rust_dos_cannot_take_refuses_the_session(self) -> None:
+        for mode in ("shared", "exclusive"):
+            with self.subTest(mode=mode):
+                session = RustDosSession(self.settings("lock-held", run_lock=mode))
+                with self.assertRaises(LockHeld) as raised:
+                    session.start()
+                error = raised.exception
+                self.assertEqual(error.mode, mode)
+                self.assertEqual(error.directory, self.run_lock_directory)
+                self.assertEqual(len(error.output), 1)
+                self.assertIn(f"waiting for the {mode} lock", error.output[0])
+                self.assertIn("rust-dos-lock (pid 4242, exclusive, holding)", str(error))
+                self.assertIn("exited with code 3", str(error))
+                assert session.emulator_process is not None
+                self.assertEqual(processes.process_state(session.emulator_process), "exited")
 
 
 @windows_only
@@ -581,10 +623,9 @@ class EventLogAndCleanup(RustDosCase):
             emulator = session.emulator_process
         assert emulator is not None
         self.assertEqual(processes.process_state(emulator), "exited")
-        self.assertFalse(self.lock_path.exists())
         self.assertFalse((settings.run_directory / "cleanup-diagnostic.txt").exists())
 
-    def test_cleanup_that_fails_while_the_process_lives_keeps_the_lock_and_writes_a_diagnostic(self) -> None:
+    def test_cleanup_that_fails_while_the_process_lives_writes_a_diagnostic(self) -> None:
         session = RustDosSession(self.settings("ignore-quit"))
         session.start()
         assert session._process is not None
@@ -593,8 +634,7 @@ class EventLogAndCleanup(RustDosCase):
                 session.close()
         text = Path(raised.exception.diagnostic).read_text(encoding="utf-8")
         self.assertIn("access denied", text)
-        self.assertTrue(self.lock_path.exists())
+        self.assertIn("holds the run lock", text)
         session._process.kill()
         session._process.wait()
         session.close()
-        self.assertFalse(self.lock_path.exists())

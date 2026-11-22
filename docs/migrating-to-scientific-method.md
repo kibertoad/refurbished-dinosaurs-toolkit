@@ -595,6 +595,47 @@ value.
 
 ## Session package upgrades
 
+### dinorefurb-dosbox-session 2.0.0: rust-dos's run lock
+
+Sessions use rust-dos's run lock in place of the package's own lock file
+([ADR 0052](decisions/0052-rust-dos-run-lock.md)). Each session passes rust-dos `--run-lock`,
+`--run-lock-wait` and `--exit-with-parent`, and `--run-lock-exclusive` for an exclusive run.
+rust-dos's lock is released when its process ends, so nothing is ever left to clean up. The
+removed names have no aliases.
+
+| Removed | Use instead |
+|---|---|
+| `RustDosSettings.lock_path` | `RustDosSettings.run_lock_directory`, for tests only. Sessions otherwise use `RUST_DOS_RUN_LOCK_DIR`, else `C:\ProgramData\refurbished-dinosaurs\run-lock`. |
+| `REFURBISHED_DINOSAURS_RUN_LOCK` | `RUST_DOS_RUN_LOCK_DIR`, which names a folder. Set it for every account, so that plain rust-dos runs and `rust-dos lock` use the sessions' folder. |
+| `DEFAULT_LOCK_PATH`, `LOCK_PATH_VARIABLE`, `resolve_lock_path` | `DEFAULT_RUN_LOCK_DIRECTORY`, `RUN_LOCK_DIRECTORY_VARIABLE`, `resolve_run_lock_directory` |
+| `read_lock`, `LockReport`, `RecordedProcess` | `rust-dos lock status [--json] [--dir DIR]` |
+| `remove_stale_lock`, `dosbox-session stale-lock`, the `dosbox-session` command | nothing: a hold ends with its process |
+| `LockHeld.report` | `LockHeld.directory`, `LockHeld.mode` and `LockHeld.output`, the lines rust-dos printed about the lock |
+
+Other changes:
+
+- `RustDosSettings.run_lock` is `shared` by default. Set `exclusive` for timing measurements and
+  runs that use the desktop. `RustDosSettings.run_lock_wait` is the wait in whole seconds, 5 by
+  default and at least 1.
+- `LockHeld` is raised when rust-dos exits with code 3 after `run_lock_wait`, so the run directory
+  now holds what the session wrote before the launch, and an event log ends with a failure
+  outcome. Use a new run directory for the retry.
+- `--no-run-lock`, `--run-lock`, `--run-lock-exclusive`, `--run-lock-wait` and `--exit-with-parent`
+  join the options `emulator_arguments` may not carry.
+- `session.json` has the format `dinorefurb-dosbox-session.rust-dos-record/2`, and its `run_lock`
+  is an object with `mode`, `directory`, `wait_seconds` and `held_by_caller` in place of a path.
+  `read_saved_state` reads checkpoints from records in format 1 and 2.
+- The event log header has the format `dinorefurb-dosbox-session.event-log/2` and records
+  `run_lock`; `EventLog.run_lock` returns it. `read_event_log` reads logs in format 1 too, with
+  `run_lock` `None`. A tool that checks `LOG_FORMAT` against a log written before 2.0.0 compares
+  with `dinorefurb-dosbox-session.event-log/1`.
+- `CleanupFailed` no longer keeps a lock: the still-running emulator holds rust-dos's lock until it
+  exits.
+- On a machine shared by several accounts, create the folder once and let every user change it,
+  since files under `C:\ProgramData` give other users read access only:
+  `icacls C:\ProgramData\refurbished-dinosaurs\run-lock /grant "*S-1-5-32-545:(OI)(CI)M" /T`.
+- A lock file left at the old path by a 1.x session is not read; delete it once no 1.x session runs.
+
 ### dinorefurb-dosbox-session 1.1.0: rust-dos v1.9.2
 
 The session now pins rust-dos [v1.9.2](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.9.2). Download `rust-dos-v1.9.2-windows-x86_64.zip`, keep its DLLs beside `rust-dos.exe` (the release runs on SDL3 and ships `SDL3.dll` in place of `SDL2.dll`), and pass `RUST_DOS_PINNED_SHA256`, which now refuses the v1.8.1 executable. A checkpoint saved under v1.8.1 records that executable's SHA-256, so a v1.9.2 run refuses to start from it (`EmulatorRefused`); save it again under v1.9.2. The session's options, `RustDosConfig` and the `[sound]` values it accepts are unchanged.

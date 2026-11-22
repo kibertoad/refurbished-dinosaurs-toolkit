@@ -1,9 +1,10 @@
-"""Owned rust-dos debugger sessions for restoration research tooling (ADR 0040, ADR 0050).
+"""Owned rust-dos debugger sessions for restoration research tooling (ADR 0040, ADR 0050, ADR 0052).
 
-The package owns the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, session records, request IDs, operation observation, guarded writes to stopped guest
-memory against a field contract the caller supplies, save states with rust-dos's strict match,
-and an event log checked against the caller's event schemas and versioned outcome contract.
+The package owns the emulator process, the mode and folder of rust-dos's machine-wide run lock,
+the guest drives, muted host audio, session records, request IDs, operation observation, guarded
+writes to stopped guest memory against a field contract the caller supplies, save states with
+rust-dos's strict match, and an event log checked against the caller's event schemas and
+versioned outcome contract.
 :class:`RustDosSession` runs rust-dos through its HTTP debug server. Windows only.
 
 The supported imports are below. Everything else is internal.
@@ -57,18 +58,10 @@ from .events import (
     hash_modules,
     read_event_log,
 )
-from .lock import (
-    DEFAULT_LOCK_PATH,
-    LOCK_PATH_VARIABLE,
-    LockReport,
-    RecordedProcess,
-    read_lock,
-    remove_stale_lock,
-    resolve_lock_path,
-)
 from .processes import ProcessIdentity
 from .rustdos import (
     AUTOEXEC,
+    DEFAULT_RUN_LOCK_DIRECTORY,
     EMULATOR_CONFIG,
     EMULATOR_LOG,
     EMULATOR_OUTPUT,
@@ -77,6 +70,7 @@ from .rustdos import (
     RUST_DOS_PINNED_TAG,
     RUST_DOS_PINNED_SHA256,
     RUST_DOS_RECORD_FORMAT,
+    RUN_LOCK_DIRECTORY_VARIABLE,
     RustDosConfig,
     RustDosObservation,
     RustDosOperation,
@@ -84,6 +78,7 @@ from .rustdos import (
     RustDosSettings,
     SoundBlaster,
     Ultrasound,
+    resolve_run_lock_directory,
 )
 from .run import EventLogSettings, Target
 from .rustdos_client import MemoryRead, Reply, RequestIds, RustDosClient
@@ -94,8 +89,8 @@ __all__ = [
     "AUTOEXEC",
     "CleanupFailed",
     "ConfigurationRefused",
-    "DEFAULT_LOCK_PATH",
     "DEFAULT_MAX_LOG_BYTES",
+    "DEFAULT_RUN_LOCK_DIRECTORY",
     "DRIVE_COPY",
     "EMULATOR_CONFIG",
     "EMULATOR_LOG",
@@ -111,10 +106,8 @@ __all__ = [
     "EventsMismatch",
     "FIELD_TYPES",
     "FieldContract",
-    "LOCK_PATH_VARIABLE",
     "LOG_FORMAT",
     "LockHeld",
-    "LockReport",
     "LogEntryRefused",
     "LogIncomplete",
     "LogMalformed",
@@ -140,8 +133,8 @@ __all__ = [
     "RUST_DOS_PINNED_TAG",
     "RUST_DOS_PINNED_SHA256",
     "RUST_DOS_RECORD_FORMAT",
+    "RUN_LOCK_DIRECTORY_VARIABLE",
     "ReadinessNotObserved",
-    "RecordedProcess",
     "Reply",
     "RequestIds",
     "RunDirectoryRefused",
@@ -172,7 +165,5 @@ __all__ = [
     "hash_modules",
     "read_event_log",
     "read_saved_state",
-    "read_lock",
-    "remove_stale_lock",
-    "resolve_lock_path",
+    "resolve_run_lock_directory",
 ]

@@ -33,6 +33,8 @@ STATES_DIRECTORY = "states"
 #: The folder in a state's folder that holds the copy of C: a checkpoint keeps.
 DRIVE_COPY = "drive-c"
 
+# The session record formats whose states read: format 2 changed only how the run lock is recorded.
+_RECORD_FORMATS = ("dinorefurb-dosbox-session.rust-dos-record/1", "dinorefurb-dosbox-session.rust-dos-record/2")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # Windows opens a device for these names, with or without an extension, instead of a folder.
 _DEVICE = re.compile(r"(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..*)?", re.IGNORECASE)
@@ -191,7 +193,7 @@ def read_saved_state(run_directory: Path, name: str) -> SavedState:
         record = json.loads((run_directory / "session.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise StateRefused(f"{run_directory} has no session record to read states from: {error}") from error
-    if not isinstance(record, dict) or record.get("format") != "dinorefurb-dosbox-session.rust-dos-record/1":
+    if not isinstance(record, dict) or record.get("format") not in _RECORD_FORMATS:
         raise StateRefused(f"{run_directory / 'session.json'} is not a rust-dos session record.")
     entries = [
         entry

@@ -104,19 +104,25 @@ class OwnedRun:
         directory.mkdir(parents=True, exist_ok=True)
 
     def _prepare_log(self) -> Callable[[Path], EventLogWriter] | None:
-        """Checks the log settings and hashes the named modules, before the lock is taken.
-
-        The header is written once the session holds the lock, so a refused module or a held lock
-        leaves the run directory empty and reusable.
-        """
+        """Checks the log settings and hashes the named modules, before the run directory is used,
+        so a refused module leaves it empty and reusable. The header records the run lock."""
         log = self.settings.event_log
         if log is None:
             return None
         contract: OutcomeContract = log.contract
         schemas: tuple[EventSchema, ...] = log.schemas
         return EventLogWriter._prepare(
-            contract, schemas, log.modules, session=self.token, package_version=package_version()
+            contract,
+            schemas,
+            log.modules,
+            session=self.token,
+            package_version=package_version(),
+            run_lock=self.run_lock(),
         )
+
+    def run_lock(self) -> Mapping[str, Any] | None:
+        """The run lock the session record and the event log header record, or ``None``."""
+        return None
 
     def _end_log(self, failure: str) -> None:
         """Ends a log that has no outcome yet with ``failure``. A log that cannot take it is left as it is."""

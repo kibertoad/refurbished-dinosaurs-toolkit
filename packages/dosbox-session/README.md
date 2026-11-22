@@ -2,12 +2,12 @@
 
 Owned [rust-dos](https://github.com/dividebysandwich/rust-dos) debugger sessions for a restoration's research tooling: the original program runs under rust-dos's debug server, and the tooling reads registers and memory, stops at breakpoints, observes operations, makes checked writes to stopped guest memory, saves and loads the machine, and keeps an event log of the run beside the static evidence. The design is [ADR 0040](../../docs/decisions/0040-rust-dos-session-backend.md). The package ran DOSBox-X sessions too until [ADR 0050](../../docs/decisions/0050-rust-dos-only-sessions.md) removed them; the [migration guide](../../docs/migrating-to-scientific-method.md) says what replaces each removed import.
 
-The package owns the parts that decide whether a recorded run can be trusted and that carry no game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host audio, the session record, request IDs, operation observation, guarded writes, save states and the event log. What a run means (executable fingerprints, address maps, state layouts and which fields may be written, input, screens, event kinds and what an outcome must say) stays in the restoration. A restored game never depends on this package.
+The package owns the parts that decide whether a recorded run can be trusted and that carry no game knowledge: the emulator process, the mode and folder of rust-dos's machine-wide run lock, the guest drives, muted host audio, the session record, request IDs, operation observation, guarded writes, save states and the event log. What a run means (executable fingerprints, address maps, state layouts and which fields may be written, input, screens, event kinds and what an outcome must say) stays in the restoration. A restored game never depends on this package.
 
 Use it for runs whose results go into a restoration as evidence. For exploring a program by hand, start rust-dos with `--debug-server` and use its API directly ([its guide](https://github.com/dividebysandwich/rust-dos/blob/main/docs/llm-debugging.md)). What the package adds over that:
 
-- a run lock that keeps two sessions off one machine, recording each process by ID and start time;
-- an emulator that Windows ends with its owner, however the owner ends;
+- rust-dos's run lock taken in one folder for the machine, shared or exclusive, with a refusal in seconds when it is held;
+- an emulator that Windows ends with its owner, however the owner ends, and that rust-dos also ends when its owner does;
 - an event log checked against your schemas and outcome contract, hashed so a changed or truncated log is rejected;
 - a session record of the executable's hash, the server's build, the arguments, the sound cards, every write and every save and load;
 - a run that refuses every further change once a write or load failed or the log has its outcome;
@@ -72,19 +72,21 @@ Entering `RustDosSession` (or calling `start()`):
    media on one letter, a target command line with a line break, and a run directory that is not
    empty. With
    `event_log` set, hashes the named modules.
-2. Takes the run lock ([below](#the-run-lock)), or refuses with `LockHeld`.
-3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it. A prepared drive
+2. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it. A prepared drive
    that holds `AUTOEXEC.BAT` or the readiness marker is refused. The session writes
    `AUTOEXEC.BAT`, which writes the readiness marker `C:\DRREADY.TXT`.
-4. Writes `rust-dos.conf` in the run directory with the sound cards and nothing else, and launches
+3. Writes `rust-dos.conf` in the run directory with the sound cards and nothing else, and launches
    rust-dos in a job object that ends it with its owner, with `--config` on that file, `-d` on
-   `drive-c`, `--debug-server 127.0.0.1:0`, `--log` on `rust-dos.log` in the run directory, and
-   `--cycles`, `--deterministic` and `--start-time` from `RustDosConfig`. SDL's dummy video driver
+   `drive-c`, `--debug-server 127.0.0.1:0`, `--log` on `rust-dos.log` in the run directory,
+   `--cycles`, `--deterministic` and `--start-time` from `RustDosConfig`, the run lock options
+   ([below](#the-run-lock)) and `--exit-with-parent` with the owner's process ID. SDL's dummy video driver
    hides the window unless `show_window` is set. `--audio-output null` mutes the host: rust-dos
    mixes the sound and plays it nowhere, keeping time as a device would. With `keep_host_sound`
    the session passes `--audio-output sdl` instead, because rust-dos without a window would choose
    the null output itself. The emulated sound devices stay either way. The emulator's output goes to
    `rust-dos.out`, where the session reads the port the server took.
+4. rust-dos takes the run lock before it starts its debug server. When it cannot take the lock
+   within `run_lock_wait` seconds it exits with code 3 and the session raises `LockHeld`.
 5. Fails with `EmulatorRefused` if rust-dos printed a warning about `rust-dos.conf`, which it does
    for a setting it did not take as written, or about an AWE32 ROM it could not load. Checks `/api/version`: the name `rust-dos`, API
    version 1 and every feature above, or refuses with `EmulatorRefused`. A server that refuses
@@ -102,46 +104,71 @@ Entering `RustDosSession` (or calling `start()`):
 
 Any failure cleans up as leaving does, then raises.
 
-Leaving (or `close()`) asks the emulator to quit, terminates it if it has not exited, and releases
-the run lock once it has. A process that outlives termination keeps the lock, writes
-`cleanup-diagnostic.txt` and raises `CleanupFailed`; closing again after the process has exited
-releases the lock. If your program ends first, Windows ends the emulator with it
-([ADR 0030](../../docs/decisions/0030-owned-emulator-ends-with-its-owner.md)), and the
-`stale-lock` command then removes the lock. The session never stops or removes anything it did not
-start.
+Leaving (or `close()`) asks the emulator to quit and terminates it if it has not exited. rust-dos
+lets go of the run lock as it exits. A process that outlives termination writes
+`cleanup-diagnostic.txt` and raises `CleanupFailed`; close the session again once the process has
+exited. If your program ends first, Windows ends the emulator with it
+([ADR 0030](../../docs/decisions/0030-owned-emulator-ends-with-its-owner.md)), and rust-dos quits on
+its own with exit code 4 because of `--exit-with-parent`. The session never stops or removes
+anything it did not start.
 
 ### The run lock
 
-One lock file per machine keeps two probes from sharing one machine's emulator, input or timing.
-The path is `C:\ProgramData\refurbished-dinosaurs\run.lock` unless the environment variable
-`REFURBISHED_DINOSAURS_RUN_LOCK` names another. That variable is a machine setting: two programs
-that resolve the lock path differently do not exclude each other, so set it in your user
-environment or not at all. `RustDosSettings.lock_path` overrides both, for tests.
+The session uses rust-dos's machine-wide run lock ([ADR 0052](../../docs/decisions/0052-rust-dos-run-lock.md)).
+The lock is a folder holding two files that the OS locks. Any number of shared holders run at
+once; an exclusive holder runs alone, and while it waits no new shared holder gets in. The OS lets
+go of a hold when its process ends, however it ends, so a lock is never left behind and there is
+nothing to clean up.
 
-The lock records the session, the owner process and the emulator, each by process ID and start
-time, so a process that later reuses an ID does not match. The emulator cannot outlive the owner
-(step 4 above), so once every process a lock records has exited, no emulator from that session
-runs, including one the owner launched but had not recorded yet (an unrecorded emulator may
-still be finishing its exit for a moment after the owner reads as exited). A session that finds the lock
-refuses to start (`LockHeld`) and its report says which recorded processes still run. Nothing
-removes a lock automatically. When every recorded process has exited, remove it with:
+Each session passes rust-dos:
 
-```text
-dosbox-session stale-lock [--lock PATH] [--json]
+- `--run-lock <folder>`, so that rust-dos exits when it cannot take the lock, where it would
+  otherwise run without it. The folder is `RustDosSettings.run_lock_directory` when set (for
+  tests), else the environment variable `RUST_DOS_RUN_LOCK_DIR`, else
+  `C:\ProgramData\refurbished-dinosaurs\run-lock` (`DEFAULT_RUN_LOCK_DIRECTORY`).
+  `resolve_run_lock_directory()` gives it.
+- `--run-lock-wait <run_lock_wait>`, 5 seconds by default. A whole number of at least 1, since
+  rust-dos reads 0 as no limit. A held lock makes the session raise `LockHeld` after that long,
+  before the window, the sound device or the debug server opens. `LockHeld.output` holds what
+  rust-dos printed about the lock, which names the holders.
+- `--run-lock-exclusive` when `RustDosSettings.run_lock` is `exclusive`. The default, `shared`,
+  runs beside other shared runs. Take it exclusive for a timing measurement and for a run that
+  uses the desktop.
+
+Programs exclude each other only when they use the same folder. rust-dos's own default is a
+folder per user, so set `RUST_DOS_RUN_LOCK_DIR` to the machine's folder for every account, and
+sessions, plain rust-dos runs and `rust-dos lock` all use it. Without the variable, sessions use the
+ProgramData folder while other rust-dos runs and `rust-dos lock` use each user's own, and the two do
+not exclude each other. The account that first
+takes the lock creates the folder, and other accounts can then read its files but not lock them.
+For several accounts, create the folder once and let every user change it:
+
+```powershell
+New-Item -ItemType Directory -Force C:\ProgramData\refurbished-dinosaurs\run-lock
+icacls C:\ProgramData\refurbished-dinosaurs\run-lock /grant "*S-1-5-32-545:(OI)(CI)M" /T
 ```
 
-It checks the processes again first, and refuses (exit code 1, nothing removed) when one still
-runs or cannot be queried, when the file is not a record this package wrote, or when deleting it
-fails. Exit code 0 means it removed the lock or found none; 2 is a usage error.
+`rust-dos lock` holds the lock around any command, and `rust-dos lock status` lists the holders:
+
+```powershell
+rust-dos lock exclusive --wait 5 -- python probes/menu_timing.py
+rust-dos lock status --dir C:\ProgramData\refurbished-dinosaurs\run-lock
+```
+
+A program it starts inherits its hold through `RUST_DOS_RUN_LOCK_HELD` and `RUST_DOS_RUN_LOCK_DIR`,
+so a session inside `rust-dos lock exclusive` starts at once in either mode, and a shared one
+inside `rust-dos lock shared` too. An exclusive session inside a shared hold raises `LockHeld`.
+The session record's `run_lock.held_by_caller` names the inherited mode.
 
 ### The session record
 
-`session.json` in the run directory is rewritten at each step. It has the format `dinorefurb-dosbox-session.rust-dos-record/1` and holds `backend`
+`session.json` in the run directory is rewritten at each step. It has the format `dinorefurb-dosbox-session.rust-dos-record/2` and holds `backend`
 (`rust-dos`), `emulator` (path, SHA-256 and the expected SHA-256 or `null`), `server` (the
 `/api/version` answer, with the instance ID that is new at every start and `build`, the git commit
 the executable was built from and whether its tree was dirty), `endpoint`
-(`127.0.0.1:<port>`), `arguments` (the launch command line), `emulator_log`, `run_lock`,
-`owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`), `sound` (the
+(`127.0.0.1:<port>`), `arguments` (the launch command line), `emulator_log`, `run_lock` (its
+`mode`, `directory`, `wait_seconds` and `held_by_caller`: the mode a calling `rust-dos lock` holds
+the same folder in, or `null`), `owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`), `sound` (the
 configuration file and the values passed for `sound_blaster` and `ultrasound`, each `null` when
 the card is left out, with ports in hexadecimal and an AWE32's `rom` as its path and SHA-256),
 `deterministic` (the speed and start time, or `null`), `media` (each drive as the server reported
@@ -262,11 +289,13 @@ with RustDosSession(settings) as session:
   ones, and carries nothing else. Only the top level is checked.
 - The `OutcomeContract` has a name, a version and the fields the final outcome must carry, all
   required and no others. Give a changed contract a higher version.
-- The header records the schemas, the contract and, for each module in `modules`, the file it was
-  imported from and that file's SHA-256, taken after the modules are imported and before the
-  emulator starts. A named module that is not imported then, or that has no file (a built-in or a
-  namespace package), is refused with `ModuleRefused` before the lock is taken. The header is
-  written once the session holds the lock.
+- The header has the format `dinorefurb-dosbox-session.event-log/2` and records the schemas, the
+  contract, the run lock as `session.json` records it (`log.run_lock`), and for each module in
+  `modules` the file it was imported from and that file's SHA-256, taken after the modules are
+  imported and before the emulator starts. A named module that is not imported then, or that has
+  no file (a built-in or a namespace package), is refused with `ModuleRefused` before anything is
+  written in the run directory. `read_event_log` also reads logs in format 1, written before
+  package 2.0.0, whose `run_lock` is `None`.
 - `session.finish_log(values)` ends the log with a completed outcome, and
   `session.fail_log(failure, values=None)` with one that records a failure. The outcome records
   how many events came before it, a SHA-256 over them in order and a SHA-256 of the header.
@@ -510,11 +539,11 @@ native procedure checks the load's stop, memory and a run to the program's exit 
 | `PlatformRefused` | The platform is not Windows. |
 | `RunDirectoryRefused` | The run directory is not empty, or `prepare_drive` wrote the readiness marker. |
 | `ConfigurationRefused` | A setting is one the session owns, sound cards rust-dos would not set up as given, or a start state that does not fit the settings. |
-| `LockHeld` | The run lock is held, or cannot be read. `report` describes it. |
-| `EmulatorLaunchFailed` | Windows refused to start the emulator in its job. Nothing runs and the lock is released. |
+| `LockHeld` | rust-dos did not get the run lock within `run_lock_wait` and exited with code 3. `directory`, `mode` and `output` say which lock and who held it. |
+| `EmulatorLaunchFailed` | Windows refused to start the emulator in its job. Nothing runs. |
 | `EmulatorRefused` | A rust-dos executable has another hash than `emulator_sha256`, or its debug server is not rust-dos, speaks another API version or lacks a feature the session relies on. |
 | `ServerRefused` | The rust-dos debug server answered a request with a status of 400 or above. `status`, `body` and `precondition` say why. |
-| `EmulatorExited` | The owned emulator exited while the session needed it. |
+| `EmulatorExited` | The owned emulator exited while the session needed it. Before the debug server started, the message carries what rust-dos printed about the run lock, such as a folder it could not write. |
 | `ReadinessNotObserved` | The server did not print its address, the guest did not write its readiness marker, or the target did not reach its entry, in time. |
 | `OperationPending` | A continuation was asked for while another operation is pending. |
 | `WriteOutsideContract` | A write names no field in the contract, has no contract, or differs from the field's length. The run fails. |
@@ -528,7 +557,7 @@ native procedure checks the load's stop, memory and a run to the program's exit 
 | `ModuleRefused` | A module the event log names is not imported, or has no file to hash. Nothing was started. |
 | `LogEntryRefused` | The event log refused an event or outcome, or has already ended. A refusal ends the log as failed and fails the run. |
 | `LogRejected` | Reading an event log refused it; its subclasses are in the table above. |
-| `CleanupFailed` | The emulator still ran after teardown; the lock was kept. |
+| `CleanupFailed` | The emulator still ran after teardown, holding the run lock until it exits. |
 
 All of them derive from `SessionError`.
 
@@ -539,6 +568,8 @@ CI runs the tests against a stand-in rust-dos debug server, with no rust-dos and
 Before each release that changes process, transport or drive handling, or moves the pinned release, the
 owner downloads the pinned rust-dos release and runs, from this directory, passing
 `--emulator-sha256` with `RUST_DOS_PINNED_SHA256` to both commands:
+
+`--run-lock-dir` passes another run lock folder; the result's `run_lock` shows the one used.
 
 ```powershell
 python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <new directory>

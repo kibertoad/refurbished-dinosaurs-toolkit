@@ -1,6 +1,6 @@
 # ADR 0050: rust-dos is the only session backend
 
-Status: accepted. Supersedes the DOSBox-X backend of [ADR 0026](0026-dosbox-x-session-package.md), [ADR 0032](0032-gated-breakpoints-for-polling-waits.md) and [ADR 0037](0037-gated-breakpoints-in-protected-mode.md), and the DOSBox-X half of [ADR 0041](0041-rust-dos-save-states.md). Amends [ADR 0040](0040-rust-dos-session-backend.md), which added rust-dos as a second backend. [ADR 0030](0030-owned-emulator-ends-with-its-owner.md) and [ADR 0046](0046-rust-dos-sound-cards.md) stand.
+Status: accepted. Supersedes the DOSBox-X backend of [ADR 0026](0026-dosbox-x-session-package.md), [ADR 0032](0032-gated-breakpoints-for-polling-waits.md) and [ADR 0037](0037-gated-breakpoints-in-protected-mode.md), and the DOSBox-X half of [ADR 0041](0041-rust-dos-save-states.md). Amends [ADR 0040](0040-rust-dos-session-backend.md), which added rust-dos as a second backend. [ADR 0030](0030-owned-emulator-ends-with-its-owner.md) and [ADR 0046](0046-rust-dos-sound-cards.md) stand. [ADR 0052](0052-rust-dos-run-lock.md) replaces the session's run lock, which this record kept, with rust-dos's.
 
 ## Context
 

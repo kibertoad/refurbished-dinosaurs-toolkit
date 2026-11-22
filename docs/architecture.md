@@ -141,9 +141,10 @@ Owns rust-dos debugger sessions for a restoration's research tooling
 - Launches the emulator inside a job that Windows ends when the owner process ends
   ([ADR 0030](decisions/0030-owned-emulator-ends-with-its-owner.md)), waits for a marker the
   guest writes once its drives are set up, and starts the target stopped at its entry.
-- Holds the machine-wide run lock, which records processes by ID and start time; a held lock
-  refuses the session, and only the `stale-lock` command removes a lock whose processes have
-  exited.
+- Has rust-dos take its machine-wide run lock, shared or exclusive, in one folder for the
+  machine, and refuses the session within seconds when rust-dos cannot take it
+  ([ADR 0052](decisions/0052-rust-dos-run-lock.md)). rust-dos also quits when the owner ends
+  (`--exit-with-parent`).
 - Gives each run an empty writable C:, mounts media read-only and mutes host audio by default
   (`--audio-output null`).
 - Writes a session record, gives every request an ID from its client's own namespace, tracks

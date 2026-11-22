@@ -1,7 +1,8 @@
 """The event log of a run: append-only JSON lines checked against schemas the caller supplies.
 
 A log is one header line, the event lines, and one outcome line. The header records the event
-schemas, the versioned outcome contract and the hashes of the modules the caller named. Each line
+schemas, the versioned outcome contract, the hashes of the modules the caller named and the run
+lock the session ran under. Each line
 is written, flushed and synced before the call that writes it returns. The outcome records how
 many events came before it and a hash over them in order, so a missing, extra or reordered event
 does not read back as the run that was recorded.
@@ -38,8 +39,10 @@ from .errors import (
 )
 from .hashing import sha256 as _sha256
 
-#: The ``format`` field of an event log's header.
-LOG_FORMAT = "dinorefurb-dosbox-session.event-log/1"
+#: The ``format`` field of the event log header this package writes. Format 2 added ``run_lock``.
+LOG_FORMAT = "dinorefurb-dosbox-session.event-log/2"
+# The header formats read_event_log reads, with the keys each header has.
+_LOG_FORMAT_1 = "dinorefurb-dosbox-session.event-log/1"
 
 #: The largest log :func:`read_event_log` reads unless it is given another limit: 64 MiB.
 DEFAULT_MAX_LOG_BYTES = 64 * 1024 * 1024
@@ -47,7 +50,8 @@ DEFAULT_MAX_LOG_BYTES = 64 * 1024 * 1024
 #: The JSON types a schema or contract field can name.
 FIELD_TYPES = ("string", "integer", "number", "boolean", "null", "array", "object")
 
-_HEADER_KEYS = {"record", "format", "package_version", "session", "outcome_contract", "event_schemas", "modules"}
+_HEADER_KEYS_1 = {"record", "format", "package_version", "session", "outcome_contract", "event_schemas", "modules"}
+_HEADER_KEYS = {*_HEADER_KEYS_1, "run_lock"}
 _EVENT_KEYS = {"record", "kind", "data"}
 _OUTCOME_KEYS = {"record", "event_count", "events_sha256", "header_sha256", "failure", "values"}
 
@@ -303,15 +307,19 @@ class EventLogWriter:
         modules: Iterable[str] = (),
         session: str | None = None,
         package_version: str = "unknown",
+        run_lock: Mapping[str, Any] | None = None,
     ) -> EventLogWriter:
         """Hashes the named modules, then creates the log at ``path`` and writes its header.
+
+        ``run_lock`` is the run lock the header records, as
+        :meth:`~dinorefurb_dosbox_session.RustDosSession.run_lock` gives it, or ``None``.
 
         :raises ModuleRefused: a named module is not imported or has no file; nothing is created.
         :raises FileExistsError: ``path`` exists. A log is never appended to across runs.
         :raises ValueError: the contract or schemas are not the classes above, or two schemas share
             a kind.
         """
-        return cls._prepare(contract, schemas, modules, session, package_version)(path)
+        return cls._prepare(contract, schemas, modules, session, package_version, run_lock)(path)
 
     @classmethod
     def _prepare(
@@ -321,11 +329,12 @@ class EventLogWriter:
         modules: Iterable[str],
         session: str | None,
         package_version: str,
+        run_lock: Mapping[str, Any] | None = None,
     ) -> Callable[[Path], EventLogWriter]:
         """Checks the settings and hashes the modules, and returns what creates the log.
 
-        A session prepares its log before it takes the run lock, so a refused module leaves nothing
-        behind, and creates the file only once it holds the lock.
+        A session prepares its log before it creates anything in the run directory, so a refused
+        module leaves nothing behind.
         """
         if not isinstance(contract, OutcomeContract):
             raise ValueError(f"the outcome contract must be an OutcomeContract, not {type(contract).__name__}")
@@ -345,6 +354,7 @@ class EventLogWriter:
                 "outcome_contract": contract.to_json(),
                 "event_schemas": [schema.to_json() for schema in schemas],
                 "modules": [module.to_json() for module in hashes],
+                "run_lock": None if run_lock is None else _json_value(run_lock, "the run lock"),
             }
         )
         by_kind = {schema.kind: schema for schema in schemas}
@@ -506,6 +516,9 @@ class EventLog:
     modules: tuple[ModuleHash, ...]
     events: tuple[LoggedEvent, ...]
     outcome: Mapping[str, Any]
+    #: The run lock the header records (``mode``, ``directory``, ``wait_seconds`` and
+    #: ``held_by_caller``), or ``None`` for a log written without one or in format 1.
+    run_lock: Mapping[str, Any] | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -557,15 +570,22 @@ def _keys(record: Mapping[str, Any], expected: set[str], number: int, path: Path
 
 def _header(
     record: Mapping[str, Any], path: Path
-) -> tuple[str, str | None, OutcomeContract, tuple[EventSchema, ...], tuple[ModuleHash, ...]]:
+) -> tuple[
+    str, str | None, OutcomeContract, tuple[EventSchema, ...], tuple[ModuleHash, ...], Mapping[str, Any] | None
+]:
     if record["record"] != "header":
         raise LogMalformed(f"Line 1 of {path} holds the {record['record']} record where the log header belongs.", 1)
-    if record.get("format") != LOG_FORMAT:
+    if record.get("format") not in (LOG_FORMAT, _LOG_FORMAT_1):
         raise LogMalformed(
-            f"The header of {path} has format {record.get('format')!r}; this package reads {LOG_FORMAT}.", 1
+            f"The header of {path} has format {record.get('format')!r}; this package reads {LOG_FORMAT} and "
+            f"{_LOG_FORMAT_1}.",
+            1,
         )
-    _keys(record, _HEADER_KEYS, 1, path)
+    _keys(record, _HEADER_KEYS if record["format"] == LOG_FORMAT else _HEADER_KEYS_1, 1, path)
     try:
+        run_lock = record.get("run_lock")
+        if not (run_lock is None or isinstance(run_lock, dict)):
+            raise ValueError("the run lock is not an object")
         version = record["package_version"]
         session = record["session"]
         if not isinstance(version, str) or not (session is None or isinstance(session, str)):
@@ -599,7 +619,7 @@ def _header(
             modules.append(ModuleHash(module["name"], module["path"], module["sha256"]))
     except ValueError as error:
         raise LogMalformed(f"The header of {path} cannot be read: {error}.", 1) from None
-    return version, session, contract, tuple(schemas), tuple(modules)
+    return version, session, contract, tuple(schemas), tuple(modules), run_lock
 
 
 def _outcome_fields(record: Mapping[str, Any], number: int, path: Path) -> None:
@@ -685,6 +705,7 @@ def read_event_log(
     schemas: dict[str, EventSchema] = {}
     schema_list: tuple[EventSchema, ...] = ()
     modules: tuple[ModuleHash, ...] = ()
+    run_lock: Mapping[str, Any] | None = None
     events: list[LoggedEvent] = []
     events_hash = hashlib.sha256()
     outcome: dict[str, Any] | None = None
@@ -696,7 +717,7 @@ def read_event_log(
         number = index + 1
         record = _parse(raw, number, path)
         if number == 1:
-            version, session, contract, schema_list, modules = _header(record, path)
+            version, session, contract, schema_list, modules, run_lock = _header(record, path)
             schemas = {schema.kind: schema for schema in schema_list}
             continue
         if outcome is not None:
@@ -773,4 +794,4 @@ def read_event_log(
             f"The outcome on line {outcome_line} of {path} differs from the expected one: {'; '.join(differences)}.",
             outcome_line,
         )
-    return EventLog(path, version, session, contract, schema_list, modules, tuple(events), outcome)
+    return EventLog(path, version, session, contract, schema_list, modules, tuple(events), outcome, run_lock)
