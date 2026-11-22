@@ -8,7 +8,10 @@ from .dispatch import indirect_call_declarations, call_ends, never_runs, indirec
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
-COLUMNS = ("start", "size", "name", "out_of_scope", "ranges")
+COLUMNS = ("start", "size", "name", "out_of_scope", "ranges", "lift", "lift_reason")
+# The work protocol's lift states, and those whose row gives a reason in lift_reason.
+LIFT_STATES = ("none", "lifted", "verified", "stuck", "excluded")
+LIFT_STATES_WITH_REASON = ("stuck", "excluded")
 SEGMENTED = re.compile(r"[0-9A-F]{4}:[0-9A-F]{4}")
 FLAT = re.compile(r"0x[0-9A-F]{8}")
 OFFSET = re.compile(r"0x[0-9A-F]{2,}")
@@ -37,8 +40,8 @@ def _place(value, image):
 
 
 def read_inventory(path, image):
-    """The rows of a function inventory TSV (``start``, ``size``, then optionally ``name``, ``out_of_scope``
-    and ``ranges``), each with its ``space``, ``at`` and half-open ``body`` ranges. Raises ``ValueError``
+    """The rows of a function inventory TSV (``start``, ``size``, then optionally ``name``, ``out_of_scope``,
+    ``ranges``, ``lift`` and ``lift_reason``), each with its ``space``, ``at`` and half-open ``body`` ranges. Raises ``ValueError``
     naming the line of the first row that does not parse. ``path`` must be absolute: the CLI resolves a
     config's relative ``inventory`` against the config file's directory, and a library caller resolves
     it the same way, so no path is read against the process's working directory."""
@@ -53,7 +56,10 @@ def read_inventory(path, image):
     lines = re.split(r"\r?\n", text)
     columns = lines[0].split("\t")
     if columns[:2] != ["start", "size"] or len(set(columns)) != len(columns) or not set(columns) <= set(COLUMNS):
-        raise ValueError("inventory columns are start and size, then optionally name, out_of_scope and ranges, each once")
+        raise ValueError("inventory columns are start and size, then optionally name, out_of_scope, ranges, lift and "
+                         "lift_reason, each once")
+    if "lift_reason" in columns and "lift" not in columns:
+        raise ValueError("inventory has a lift_reason column without a lift column")
     if len(lines) - 1 > MAX_ROWS:
         raise ValueError(f"inventory holds more than {MAX_ROWS} rows")
     rows, starts = [], set()
@@ -67,6 +73,13 @@ def read_inventory(path, image):
         if not re.fullmatch(r"[1-9][0-9]*", cell["size"]):
             raise bad(f"size {cell['size']} is not a positive number of bytes")
         size = int(cell["size"])
+        if "lift" in cell:
+            reason = cell.get("lift_reason", "")
+            if cell["lift"] not in LIFT_STATES:
+                raise bad(f"lift {cell['lift'] or '(empty)'} is not one of {', '.join(LIFT_STATES)}")
+            if (cell["lift"] in LIFT_STATES_WITH_REASON) != bool(reason):
+                raise bad(f"lift {cell['lift']} gives no reason in lift_reason" if not reason else
+                          f"lift {cell['lift']} gives a reason in lift_reason, which only stuck and excluded take")
         place = _place(cell["start"], image)
         if place is None:
             raise bad(f"start {cell['start']} is not an address in the notation of a "

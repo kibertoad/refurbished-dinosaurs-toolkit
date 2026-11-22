@@ -596,6 +596,14 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertEqual(ended["assumptions"][0], "each reached call returns to its next instruction, except an "
                                                   "indirect call declared never to run")
 
+    def test_the_lift_columns_are_read_and_change_no_target(self):
+        text = ("start\tsize\tname\tout_of_scope\tranges\tlift\tlift_reason\n"
+                "1000:0000\t6\t\t\t\tverified\t\n"
+                "1000:0006\t1\t\t\t\tstuck\twrites code it then runs\n"
+                "1000:000B\t1\t\t\t\tnone\t\n")
+        plain = "start\tsize\n1000:0000\t6\n1000:0006\t1\n1000:000B\t1\n"
+        self.assertEqual(self.check(text)["targets"], self.check(plain)["targets"])
+
     def test_a_missed_control_and_a_malformed_inventory_are_refused(self):
         with self.assertRaisesRegex(ValueError, "Positive control 12 missed"):
             self.check("start\tsize\n1000:0000\t6\n", data=RAW, controls=[12])
@@ -604,7 +612,12 @@ class InventoryCheckTests(unittest.TestCase):
                               ("start\tsize\n1000:0000\t6\n1000:0000\t2\n", "line 3: start 1000:0000 is listed twice"),
                               ("start\tsize\nmain\t6\n", "line 2: start main is not an address"),
                               ("start\tsize\tranges\n1000:0000\t5\t1000:0000..1000:0006\n", "line 2: size 5 is not the total"),
-                              ("start\tsize\n1000:0000\n", "line 2: has 1 cells")):
+                              ("start\tsize\n1000:0000\n", "line 2: has 1 cells"),
+                              ("start\tsize\tlift_reason\n1000:0000\t6\t\n", "lift_reason column without a lift column"),
+                              ("start\tsize\tlift\n1000:0000\t6\tdone\n", "line 2: lift done is not one of"),
+                              ("start\tsize\tlift\tlift_reason\n1000:0000\t6\tstuck\t\n", "line 2: lift stuck gives no reason"),
+                              ("start\tsize\tlift\tlift_reason\n1000:0000\t6\tverified\tchecked\n",
+                               "line 2: lift verified gives a reason")):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(ValueError, message):
                     self.check(text)

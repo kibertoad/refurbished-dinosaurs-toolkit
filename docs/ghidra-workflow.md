@@ -231,10 +231,10 @@ an identifier of your own for the database snapshot the export reads:
   -postScript ExportFunctionInventory.java 'coverage/BLD-CD-EN-1.0/@CD/GAME.EXE.tsv' 'game-2026-10-09'
 ```
 
-The inventory has the columns `start`, `size` and `ranges`, one row per function in Ghidra's
-address order, so two exports of one snapshot are identical byte for byte. It holds no names, since
-Ghidra's names can come from the original's symbols. A start and a range end are written in the
-Standard's notation for the program:
+The inventory has one row per function in Ghidra's address order, so two exports of one snapshot
+with the same previous inventory are identical byte for byte. It takes no names from Ghidra, since
+Ghidra's names can come from the original's symbols; a `name` is one a researcher wrote into an
+earlier inventory. A start and a range end are written in the Standard's notation for the program:
 
 - a 32-bit flat program (PE, LE, LX, 32-bit ELF) as `0x` and 8 upper-case hex digits, and a 64-bit
   ELF program with 16;
@@ -252,6 +252,29 @@ Standard's notation for the program:
 from the start; otherwise it lists every range of the body, half-open `start..end`, in address order
 and separated by spaces.
 
+The inventory has the seven columns the work protocol names: `start`, `size`, `name`,
+`out_of_scope`, `ranges`, `lift` and `lift_reason`. A first export leaves `name`, `out_of_scope`
+and `lift_reason` empty and gives every function the lift state `none`. To export a file again
+without losing what researchers wrote into its inventory, move the old inventory and its side files
+aside and pass the moved inventory as a third argument:
+
+```powershell
+& $analyzeHeadless $projectRoot Restoration -process 'GAME.EXE' -readOnly -noanalysis `
+  -scriptPath (scientific-method-engine ghidra-scripts) `
+  -postScript ExportFunctionInventory.java 'coverage/BLD-CD-EN-1.0/@CD/GAME.EXE.tsv' 'game-2026-11-22' `
+  'coverage/BLD-CD-EN-1.0/@CD/GAME.EXE.old.tsv'
+```
+
+Each function keeps the name and out-of-scope reason the old inventory gave its start. It keeps its
+lift state and reason only where its size and ranges are unchanged, since the lifted function
+translated other code where the body changed, and otherwise has `none`. The `lift_` lines of the
+old provenance file, the revisions the lift states were checked with, go into the new one; without
+that file the script says so and the new provenance has none. A previous row that the checker
+would refuse, such as `stuck` with no reason or `verified` with one, fails the export. An old
+row with a name, a reason or a state other than `none` at a start no function has any more fails
+the export, which then writes nothing; the protocol asks for such a row to be reconciled first.
+Delete the moved files once the new inventory is committed.
+
 Beside the inventory, the script writes `<file>.provenance.tsv`, one name and value per line:
 
 | Name | Value |
@@ -262,6 +285,7 @@ Beside the inventory, the script writes `<file>.provenance.tsv`, one name and va
 | `snapshot` | the identifier you passed |
 | `script`, `script_sha256` | `ExportFunctionInventory` and the SHA-256 of the script source that ran |
 | `helper`, `helper_sha256` | `scientificmethod/Xxh3.java` and the SHA-256 of that source, which computes `xxh3` |
+| `lift_...` | only with a previous inventory: each `lift_` line of the provenance file beside it, as it was |
 
 The hashes are of the file bytes the program holds, used only when their SHA-256 equals the one
 Ghidra recorded at import. A program that holds no such bytes, or only more than 256 MiB of them,
