@@ -322,6 +322,8 @@ had to change, and is `[]` for a sheet that equals the DAT's as it is:
   `<game> (Track N).bin` after its entry; the archiver names them after `--name`.
 - `line endings`: CRLF instead of LF or the other way round. A sheet redumper wrote outside Windows
   ends its lines with LF.
+- `all-zero ISRC lines`: every `ISRC 000000000000` line removed. Some drives report a track
+  without an ISRC as twelve zeros, and redumper writes the line; Redump's sheets leave it out.
 - `an all-zero CATALOG line`: `CATALOG 0000000000000` added or removed. A disc without a media
   catalog number has thirteen zeros on some drives and no catalog at all on others.
 

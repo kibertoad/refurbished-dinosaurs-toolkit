@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import tempfile
 import unittest
 import zipfile
@@ -151,6 +152,49 @@ class RedumpTests(unittest.TestCase):
         )
         self.assertEqual((report["status"], report["cueSheetChanges"]), ("matched", ["an all-zero CATALOG line"]))
 
+    def with_isrc(self, sheet: bytes, code: bytes) -> bytes:
+        """``sheet`` with an ``ISRC code`` line under its first two tracks, as redumper writes one."""
+        newline = self.newline()
+        tracks = list(re.finditer(rb"( *)TRACK \d+ \S+" + re.escape(newline), sheet))
+        self.assertGreaterEqual(len(tracks), 2)
+        out, start = b"", 0
+        for match in tracks[:2]:
+            out += sheet[start : match.end()] + match.group(1) + b"  ISRC " + code + newline
+            start = match.end()
+        return out + sheet[start:]
+
+    def compare_sheet(self, dat_sheet: bytes, copy_sheet: bytes) -> dict[str, object]:
+        return redump.compare(
+            redump.parse_dat(self.sheet_dat(dat_sheet).read_bytes(), "redump.dat"),
+            file_hashes(self.cue, self.split.parent),
+            copy_sheet,
+            [file_hashes(t, self.split.parent) for t in self.tracks],
+        )
+
+    def test_all_zero_isrc_lines_only_the_copy_has_match(self) -> None:
+        sheet = self.cue.read_bytes()
+        report = self.compare_sheet(sheet, self.with_isrc(sheet, b"000000000000"))
+        self.assertEqual((report["status"], report["cueSheetChanges"]), ("matched", ["all-zero ISRC lines"]))
+        self.assertEqual(report["differences"], [])
+
+    def test_all_zero_isrc_lines_and_an_all_zero_catalog_line_together_match(self) -> None:
+        sheet = self.cue.read_bytes()
+        dat_sheet = b"CATALOG 0000000000000" + self.newline() + sheet
+        report = self.compare_sheet(dat_sheet, self.with_isrc(sheet, b"000000000000"))
+        self.assertEqual(
+            (report["status"], report["cueSheetChanges"]), ("matched", ["all-zero ISRC lines", "an all-zero CATALOG line"])
+        )
+
+    def test_a_real_isrc_or_one_only_the_dat_has_keeps_the_cue_sheet_partial(self) -> None:
+        sheet = self.cue.read_bytes()
+        for name, dat_sheet, copy_sheet in (
+            ("a real ISRC in the copy", sheet, self.with_isrc(sheet, b"USABC9600001")),
+            ("all-zero ISRC lines only in the DAT", self.with_isrc(sheet, b"000000000000"), sheet),
+        ):
+            with self.subTest(name):
+                report = self.compare_sheet(dat_sheet, copy_sheet)
+                self.assertEqual((report["status"], report["cueSheetChanges"]), ("partial", []))
+
     def test_a_catalog_number_or_other_content_keeps_the_cue_sheet_partial(self) -> None:
         sheet = self.cue.read_bytes()
         for name, dat_sheet in (
@@ -165,7 +209,7 @@ class RedumpTests(unittest.TestCase):
                 self.assertEqual((report["status"], report["cueSheetChanges"]), ("partial", []))
                 self.assertEqual(
                     report["differences"],
-                    ["the cue sheet's content differs from the DAT's, beyond its FILE names, line endings and an all-zero CATALOG line"],
+                    ["the cue sheet's content differs from the DAT's, beyond its FILE names, line endings, all-zero ISRC lines and an all-zero CATALOG line"],
                 )
 
     def test_a_cue_sheet_differing_in_line_endings_matches_and_says_so(self) -> None:

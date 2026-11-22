@@ -228,11 +228,16 @@ ZERO_CATALOG = b"CATALOG 0000000000000"
 """A disc without a media catalog number. Some drives report it as thirteen zeros, others not at all,
 so a cue sheet may have this line or not for the same disc."""
 
+ZERO_ISRC = re.compile(rb"^[ \t]*ISRC 000000000000\r?\n", re.MULTILINE)
+"""A track without an ISRC. Some drives report one as twelve zeros and redumper then writes this
+line under the track; Redump's cue sheets leave it out."""
+
 
 def _sheet_variants(sheet: bytes, renames: dict[str, str]) -> list[tuple[list[str], bytes]]:
     """The copy's cue sheet with what does not describe the disc's bytes changed, each with the
     list of what was changed: its ``FILE`` names made the DAT's track names, its line endings made
-    CRLF or LF, and an all-zero ``CATALOG`` line removed or added. The sheet as it is comes first."""
+    CRLF or LF, its all-zero ``ISRC`` lines removed, and an all-zero ``CATALOG`` line removed or
+    added. The sheet as it is comes first."""
     changes: list[str] = []
     renamed = sheet
     if renames:
@@ -244,19 +249,24 @@ def _sheet_variants(sheet: bytes, renames: dict[str, str]) -> list[tuple[list[st
             changes.append("FILE names")
     variants: list[tuple[list[str], bytes]] = [([], sheet)]
     unix = renamed.replace(b"\r\n", b"\n")
-    for text in (renamed, unix.replace(b"\n", b"\r\n"), unix):
-        made = changes + (["line endings"] if text != renamed else [])
-        newline = b"\r\n" if b"\r\n" in text else b"\n"
-        zero = ZERO_CATALOG + newline
-        if text.startswith(zero):
-            catalog = (["an all-zero CATALOG line"], text[len(zero):])
-        elif not text.startswith(b"CATALOG "):
-            catalog = (["an all-zero CATALOG line"], zero + text)
-        else:
-            catalog = None
-        variants.append((made, text))
-        if catalog is not None:
-            variants.append((made + catalog[0], catalog[1]))
+    for ended in (renamed, unix.replace(b"\n", b"\r\n"), unix):
+        ending = changes + (["line endings"] if ended != renamed else [])
+        bases = [(ending, ended)]
+        without_isrc = ZERO_ISRC.sub(b"", ended)
+        if without_isrc != ended:
+            bases.append((ending + ["all-zero ISRC lines"], without_isrc))
+        for made, text in bases:
+            newline = b"\r\n" if b"\r\n" in text else b"\n"
+            zero = ZERO_CATALOG + newline
+            if text.startswith(zero):
+                catalog = (["an all-zero CATALOG line"], text[len(zero):])
+            elif not text.startswith(b"CATALOG "):
+                catalog = (["an all-zero CATALOG line"], zero + text)
+            else:
+                catalog = None
+            variants.append((made, text))
+            if catalog is not None:
+                variants.append((made + catalog[0], catalog[1]))
     return variants
 
 
@@ -359,8 +369,9 @@ def compare(
     ``crc32``, ``md5`` and ``sha1``, as ``pipeline.file_hashes`` does. Files are matched by size
     and all three hashes; names are reported separately. The cue sheet counts as matching when it
     equals the DAT's as it is, or once its ``FILE`` names are the DAT's track names, its line
-    endings the DAT's and an all-zero ``CATALOG`` line added or removed; ``cueSheetChanges`` lists
-    what had to change (empty for an exact match). None of those describe the disc's bytes. The
+    endings the DAT's, its all-zero ``ISRC`` lines removed and an all-zero ``CATALOG`` line added
+    or removed; ``cueSheetChanges`` lists what had to change (empty for an exact match). None of
+    those describe the disc's bytes. The
     status is ``matched`` when every track file and the cue sheet match one game's files and the
     game lists no other file, ``partial`` when the track files match that way but the cue sheet
     does not (or the DAT lists none), ``notListed`` when no game lists any of the track files, and
@@ -442,7 +453,7 @@ def _compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: lis
     if not sheets:
         differences.append(f"{dat.file} lists no cue sheet for {game.name!r}, so the copy's cue sheet was not compared")
     else:
-        differences.append("the cue sheet's content differs from the DAT's, beyond its FILE names, line endings and an all-zero CATALOG line")
+        differences.append("the cue sheet's content differs from the DAT's, beyond its FILE names, line endings, all-zero ISRC lines and an all-zero CATALOG line")
     return result
 
 
