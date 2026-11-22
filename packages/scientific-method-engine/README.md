@@ -38,7 +38,7 @@ and `ReportRangeBoundaries` says when it stopped printing, with counts that stil
 for the other report scripts, a result count equal to the cap means the same.
 `analyzeHeadless` can exit with code 0 after a script failed to load, so check the log for the
 script's own result lines ([the Ghidra workflow](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md)
-says what a run must show). The scripts compile against Ghidra 12.1. `ReportConstantFirstArgumentCalls`,
+says what a run must show). The scripts compile against Ghidra 12.1 and 12.2, and CI compiles them against 12.2. `ReportConstantFirstArgumentCalls`,
 `ReportFirstArgumentCallSummary`, `ReportCallSitesWithScalars`, `ReportScalarConstants`,
 `ReportFunctionScalarConstants`, `ReportInstructionWindow`, `ExportBoundedFlow` and `ExportFunctionInventory` load shared helpers from the `scientificmethod/` directory beside them, so pass the directory the command prints as `-scriptPath`,
 or copy that subdirectory along with the scripts.

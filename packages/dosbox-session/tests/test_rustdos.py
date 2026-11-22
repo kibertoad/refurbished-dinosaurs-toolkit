@@ -88,7 +88,7 @@ class StartAndStop(RustDosCase):
         self.assertEqual(data["backend"], "rust-dos")
         self.assertEqual(len(data["emulator"]["sha256"]), 64)
         self.assertEqual(data["server"]["api_version"], 1)
-        self.assertEqual(data["server"]["build"]["commit_short"], "3bdb0ef")
+        self.assertEqual(data["server"]["build"]["commit_short"], "a831555")
         self.assertNotIn("req", data["server"])
         self.assertRegex(data["endpoint"], r"^127\.0\.0\.1:\d+$")
         self.assertEqual(data["host_sound"], "muted")

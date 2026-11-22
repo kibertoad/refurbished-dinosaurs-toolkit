@@ -156,7 +156,7 @@ pnpm exec standard-coverage --require-complete    # fail while an in-scope funct
 
 An inventory is `coverage/<build>/<file>.tsv`, with `<file>` the manifest's path and a `CD:` prefix
 written as a directory `@CD`. Its columns are `start` and `size`, then optionally `name`,
-`out_of_scope` and `ranges`. `start` is in the standard's notation for the file's format: an address,
+`out_of_scope`, `ranges`, `lift` and `lift_reason`. `start` is in the standard's notation for the file's format: an address,
 or for MZ overlay code an offset inside a row of the build's Code ranges. When the body is not one
 range from `start`, `ranges` lists its half-open ranges as `start..end` in the same notation,
 separated by spaces: `0x00401000..0x00401010 0x00401200..0x00401210`. `size` is then their total,
@@ -205,6 +205,18 @@ the list, when loading the spec had problems, since an entry that could not be r
 complete reading, and for a file where a location of a counted finding does not parse.
 [ADR 0043](../../docs/decisions/0043-complete-reading-and-side-files-in-standard-coverage.md) gives
 the reasons.
+
+`lift` gives each function's state in the work protocol's
+[lift](https://dinorefurb.com/work-protocol/#where-the-lift-lives): `none`, `lifted`, `verified`,
+`stuck` or `excluded`. Once an inventory has the column, every row gives one of them.
+`lift_reason` gives the reason for a `stuck` or `excluded` function and is empty for the others,
+and an inventory with `lift_reason` and no `lift` cannot be read. A row that breaks either rule is
+invalid, so the inventory is not measured. The text prints
+`  lift: <n> none (<b> bytes), <n> lifted (<b> bytes), ...` under each inventory, over every row
+whether in scope or not, with each byte counted once within a state, and `--json` gives `lift` as
+`functions` and `bytes` for each state. `--list` ends each function's line with its state and any
+reason, with `lift` and `liftReason` in `--json`. An inventory without the column prints
+`  lift: unavailable, the inventory has no lift column`, and `lift` is `{ "unavailable": ... }`.
 
 The `.provenance.tsv` and `.regions.tsv` files the work protocol puts beside an inventory are read
 when they exist; a missing one is no problem. The provenance file holds one name and value per
