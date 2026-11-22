@@ -13,6 +13,18 @@ import type { CodeRange, Meta, Yaml } from "./types.ts";
 /** A place in a file: an address in the format's notation, or an offset into the shipped file. */
 export type Space = "address" | "offset";
 
+/**
+ * The lift states of the work protocol's lift (https://dinorefurb.com/work-protocol/#where-the-lift-lives),
+ * in the order a report lists them.
+ */
+export const LIFT_STATES = ["none", "lifted", "verified", "stuck", "excluded"] as const;
+
+/** A function's lift state. */
+export type LiftState = (typeof LIFT_STATES)[number];
+
+/** The lift states whose row must give a reason in lift_reason. */
+const LIFT_STATES_WITH_REASON: readonly LiftState[] = ["stuck", "excluded"];
+
 /** One row of an inventory. */
 export interface InventoryRow {
   /** The start as the inventory writes it. */
@@ -23,6 +35,10 @@ export interface InventoryRow {
   size: number;
   name: string;
   outOfScope: string;
+  /** The lift state the lift column gives, or null when the inventory has no lift column. */
+  lift: LiftState | null;
+  /** Why the function is stuck or excluded, from lift_reason; empty for any other state. */
+  liftReason: string;
   /**
    * The body's half-open ranges in the row's space, in address order: those the ranges column
    * gives, with ranges that touch joined into one, or start through start + size when it gives none.
@@ -42,6 +58,8 @@ export interface Inventory {
   xxh3: string;
   /** The rows that could be read. */
   functions: InventoryRow[];
+  /** True when the header has a lift column, so every row gives a lift state. */
+  hasLift: boolean;
   /** How many rows the inventory has below its header, read or not. */
   rows: number;
   /** How many of them could not be read; each has a problem. */
@@ -255,9 +273,15 @@ export function readInventories(
       columns[0] !== "start" ||
       columns[1] !== "size" ||
       new Set(columns).size !== columns.length ||
-      columns.some((c) => !["start", "size", "name", "out_of_scope", "ranges"].includes(c))
+      columns.some((c) => !["start", "size", "name", "out_of_scope", "ranges", "lift", "lift_reason"].includes(c))
     ) {
-      reject("the columns are start and size, then optionally name, out_of_scope and ranges, each once");
+      reject(
+        "the columns are start and size, then optionally name, out_of_scope, ranges, lift and lift_reason, each once",
+      );
+      continue;
+    }
+    if (columns.includes("lift_reason") && !columns.includes("lift")) {
+      reject("has a lift_reason column without a lift column");
       continue;
     }
     const ranges: CodeRange[] = (codeRanges.get(build) ?? []).filter((r) => r.file === file);
@@ -272,6 +296,27 @@ export function readInventories(
       }
       const cell = (name: string) => (columns.includes(name) ? cells[columns.indexOf(name)].trim() : "");
       const start = cell("start");
+      // The lift state: one of LIFT_STATES in every row once the column is there, and a reason in
+      // lift_reason exactly when the state is stuck or excluded.
+      let lift: LiftState | null = null;
+      const liftReason = cell("lift_reason");
+      if (columns.includes("lift")) {
+        const state = cell("lift");
+        if (!(LIFT_STATES as readonly string[]).includes(state)) {
+          bad(`${at}: lift ${state || "(empty)"} is not one of ${LIFT_STATES.join(", ")}`);
+          return;
+        }
+        lift = state as LiftState;
+        const needsReason = LIFT_STATES_WITH_REASON.includes(lift);
+        if (needsReason && !liftReason) {
+          bad(`${at}: lift ${lift} gives no reason in lift_reason`);
+          return;
+        }
+        if (!needsReason && liftReason) {
+          bad(`${at}: lift ${lift} gives a reason in lift_reason, which only stuck and excluded take`);
+          return;
+        }
+      }
       const size = Number(cell("size"));
       if (!/^[1-9][0-9]*$/.test(cell("size")) || !Number.isSafeInteger(size)) {
         bad(`${at}: size ${cell("size")} is not a positive number of bytes`);
@@ -348,7 +393,16 @@ export function readInventories(
         return;
       }
       seen.add(key);
-      functions.push({ start, ...place, size, name: cell("name"), outOfScope: cell("out_of_scope"), body });
+      functions.push({
+        start,
+        ...place,
+        size,
+        name: cell("name"),
+        outOfScope: cell("out_of_scope"),
+        lift,
+        liftReason,
+        body,
+      });
     });
     functions.sort((a, b) =>
       a.space === b.space ? (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) : a.space < b.space ? -1 : 1,
@@ -360,6 +414,7 @@ export function readInventories(
       format,
       xxh3: String(bf.unpacked?.xxh3 ?? bf.xxh3),
       functions,
+      hasLift: columns.includes("lift"),
       rows: lines.length,
       // Every row is either read into functions or rejected with a problem.
       invalidRows: lines.length - functions.length,

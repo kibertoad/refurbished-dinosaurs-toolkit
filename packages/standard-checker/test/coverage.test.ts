@@ -179,6 +179,7 @@ test("--json gives the figures, and --list adds the entries that cite each funct
         sharedBytes: 0,
         uncited: [{ start: "0x00401100", size: 16, name: "" }],
         completeReading: { functions: 0, bytes: 0 },
+        lift: { unavailable: "the inventory has no lift column" },
         provenance: null,
         mapping: { unavailable: "no regions file" },
       },
@@ -205,6 +206,79 @@ test("--json gives the figures, and --list adds the entries that cite each funct
   assert.match(listed.output, /^  0x00401000\t32\tFND-SCORE-001, FND-SCORE-002$/m);
   assert.match(listed.output, /^  0x00401100\t16\tNone$/m);
   assert.match(listed.output, /^  0x00401200\t8\tout of scope: library code$/m);
+  assert.match(listed.output, /^  lift: unavailable, the inventory has no lift column$/m);
+});
+
+// Four functions of 32, 16, 8 and 4 bytes, the third out of scope, with a lift state each.
+const LIFT_INVENTORY =
+  "start\tsize\tout_of_scope\tlift\tlift_reason\n" +
+  "0x00401000\t32\t\tverified\t\n" +
+  "0x00401100\t16\t\tstuck\twrites code it then runs\n" +
+  "0x00401200\t8\tlibrary code\texcluded\tsound driver the rebuild replaces\n" +
+  "0x00401300\t4\t\tnone\t\n";
+
+test("the lift column gives the functions and bytes in each lift state, out-of-scope rows included", (t) => {
+  const root = copy(t);
+  inventory(root, LIFT_INVENTORY);
+  const { status, output } = run(root, "--list");
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^ {2}lift: 1 none \(4 bytes\), 0 lifted \(0 bytes\), 1 verified \(32 bytes\), 1 stuck \(16 bytes\), 1 excluded \(8 bytes\)$/m,
+  );
+  assert.match(output, /^ {2}0x00401100\t16\tNone\tlift stuck: writes code it then runs$/m);
+  assert.match(output, /^ {2}0x00401000\t32\tNone\tlift verified$/m);
+  const json = JSON.parse(run(root, "--json", "--list").stdout);
+  assert.deepEqual(json.inventories[0].lift, {
+    none: { functions: 1, bytes: 4 },
+    lifted: { functions: 0, bytes: 0 },
+    verified: { functions: 1, bytes: 32 },
+    stuck: { functions: 1, bytes: 16 },
+    excluded: { functions: 1, bytes: 8 },
+  });
+  assert.deepEqual(
+    json.inventories[0].list.map((f: { lift: string; liftReason: string }) => [f.lift, f.liftReason]),
+    [
+      ["verified", ""],
+      ["stuck", "writes code it then runs"],
+      ["excluded", "sound driver the rebuild replaces"],
+      ["none", ""],
+    ],
+  );
+});
+
+test("a lift state outside the list, or a reason missing or given where it does not belong, is invalid", (t) => {
+  const root = copy(t);
+  inventory(
+    root,
+    "start\tsize\tlift\tlift_reason\n" +
+      "0x00401000\t32\tverified\t\n" +
+      "0x00401100\t16\tdone\t\n" +
+      "0x00401200\t8\t\t\n" +
+      "0x00401300\t4\tstuck\t\n" +
+      "0x00401400\t4\tverified\tchecked twice\n",
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  for (const line of [
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 3: lift done is not one of none, lifted, verified, stuck, excluded",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 4: lift (empty) is not one of none, lifted, verified, stuck, excluded",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 5: lift stuck gives no reason in lift_reason",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 6: lift verified gives a reason in lift_reason, which only stuck and excluded take",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: not measured, 4 of 5 rows are invalid",
+  ])
+    assert.ok(output.includes(line), `${line}\n---\n${output}`);
+});
+
+test("a lift_reason column without a lift column makes the inventory unreadable", (t) => {
+  const root = copy(t);
+  inventory(root, "start\tsize\tlift_reason\n0x00401000\t4\t\n");
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes("coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: has a lift_reason column without a lift column"),
+    output,
+  );
 });
 
 test("segmented addresses are compared by the linear address they name", (t) => {
@@ -308,7 +382,19 @@ test("an inventory with a header and no rows is measured as a file of no functio
     output,
     /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 0 of 0 functions cited, 0 of 0 bytes; 0 out of scope$/m,
   );
+  assert.match(output, /^ {2}lift: unavailable, the inventory has no lift column$/m);
   assert.doesNotMatch(output, /not measured/);
+});
+
+test("an inventory with a lift column and no rows gives lift figures of 0", (t) => {
+  const root = copy(t);
+  inventory(root, "start\tsize\tlift\n");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^ {2}lift: 0 none \(0 bytes\), 0 lifted \(0 bytes\), 0 verified \(0 bytes\), 0 stuck \(0 bytes\), 0 excluded \(0 bytes\)$/m,
+  );
 });
 
 test("an offset start for overlay code must lie inside a row of the build's Code ranges", (t) => {

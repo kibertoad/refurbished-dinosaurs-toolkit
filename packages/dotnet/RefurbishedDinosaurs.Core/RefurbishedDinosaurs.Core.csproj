@@ -6,6 +6,6 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="System.IO.Hashing" Version="10.0.12" />
+    <PackageReference Include="System.IO.Hashing" Version="10.0.15" />
   </ItemGroup>
 </Project>

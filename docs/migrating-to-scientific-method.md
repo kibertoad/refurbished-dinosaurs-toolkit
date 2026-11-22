@@ -595,6 +595,10 @@ value.
 
 ## Session package upgrades
 
+### dinorefurb-dosbox-session 1.1.0: rust-dos v1.9.2
+
+The session now pins rust-dos [v1.9.2](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.9.2). Download `rust-dos-v1.9.2-windows-x86_64.zip`, keep its DLLs beside `rust-dos.exe` (the release runs on SDL3 and ships `SDL3.dll` in place of `SDL2.dll`), and pass `RUST_DOS_PINNED_SHA256`, which now refuses the v1.8.1 executable. A checkpoint saved under v1.8.1 records that executable's SHA-256, so a v1.9.2 run refuses to start from it (`EmulatorRefused`); save it again under v1.9.2. The session's options, `RustDosConfig` and the `[sound]` values it accepts are unchanged.
+
 ### dinorefurb-dosbox-session 1.0.0: rust-dos only
 
 The package runs rust-dos sessions only ([ADR 0050](decisions/0050-rust-dos-only-sessions.md)). DOSBox-X sessions, their save states and gated breakpoints are gone, without aliases. Package 0.11.0 is the last release with them; a restoration that can't port a probe yet pins it.
@@ -625,6 +629,7 @@ not in the table has no entry.
 | Engine | Entry |
 |---|---|
 | 20.0.0 | [pypcode 4.1.0 and xxhash 4.1.0](#engine-2000-pypcode-410-and-xxhash-410) |
+| 20.0.0 | [Inventories carry the lift columns and keep their annotations](#engine-2000-inventories-carry-the-lift-columns-and-keep-their-annotations) |
 | 19.10.0 | [Related Ghidra queries can share one audited session](#engine-19100-related-ghidra-queries-can-share-one-audited-session) |
 | 19.0.0 | [`inventory-check` lists row starts at unresolved overlaps](#engine-1900-inventory-check-lists-row-starts-at-unresolved-overlaps) |
 | 18.0.0 | [Capstone 5.0.9 and pypcode 4.0.1](#engine-1800-capstone-509-and-pypcode-401) |
@@ -670,6 +675,31 @@ each of 66, 67, F2, F3, F0, ES and CS, lifts to the same p-code under both versi
 those encodings. The gaps in [upstream-gaps.md](../upstream-gaps.md) are all still present.
 
 A saved report compared with a new one differs only in `instructionSemantics`.
+
+### Engine 20.0.0: inventories carry the lift columns and keep their annotations
+
+Work protocol 2 gives every function in an inventory a lift state. `ExportFunctionInventory` now
+writes the seven columns the protocol names, `start`, `size`, `name`, `out_of_scope`, `ranges`,
+`lift` and `lift_reason`, and `inventory-check` reads `lift` and `lift_reason` as well as the other
+columns. An export needs these changes in the restoration:
+
+- Upgrade `@scientific-method/standard-checker` to 6.2.0 or later, which reads the lift columns,
+  before committing an inventory this engine exports. An older checker cannot read it, so
+  `standard-coverage` fails and the range-end check skips it.
+- A previous inventory passed as the third argument must pass the same lift rules as
+  `inventory-check`: a row with `stuck` or `excluded` and no reason, a reason on another state,
+  a `lift_reason` column without `lift`, or a size that is not a plain positive number fails the
+  export.
+- To keep the names, out-of-scope reasons and lift states of an inventory you export again, move
+  it and its `.provenance.tsv` and `.regions.tsv` aside (for example to `GAME.EXE.old.tsv`,
+  `GAME.EXE.old.provenance.tsv` and `GAME.EXE.old.regions.tsv`) and pass the moved inventory as
+  the script's third argument. A row keeps the name and reason its start had. It keeps its lift
+  state only where its size and ranges are unchanged, and otherwise has `none`. The `lift_` lines
+  of the moved provenance file go into the new one. An annotated row whose start no function has
+  any more fails the export, which then writes nothing: reconcile that row in the moved inventory
+  first, as the protocol asks.
+- Without the third argument every row has an empty name and reason and the state `none`, as a
+  first export should.
 
 ### Engine 19.10.0: related Ghidra queries can share one audited session
 

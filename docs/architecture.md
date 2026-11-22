@@ -135,7 +135,7 @@ Owns rust-dos debugger sessions for a restoration's research tooling
 ([ADR 0040](decisions/0040-rust-dos-session-backend.md)). It ran DOSBox-X sessions too until
 [ADR 0050](decisions/0050-rust-dos-only-sessions.md) removed them; the package keeps its name.
 
-- Runs the pinned upstream rust-dos v1.8.1 Windows x86-64 release through its HTTP debug server,
+- Runs the pinned upstream rust-dos v1.9.2 Windows x86-64 release through its HTTP debug server,
   which the package speaks with the standard library. It refuses a server without API version 1
   and the features it relies on.
 - Launches the emulator inside a job that Windows ends when the owner process ends

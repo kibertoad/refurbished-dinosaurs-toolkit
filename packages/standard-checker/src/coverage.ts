@@ -17,13 +17,21 @@
 //
 // A function inventory is coverage/<build>/<file>.tsv, where <file> is the path the build's
 // manifest gives, with a CD: or CD2: prefix written as a directory @CD or @CD2. It is tab-separated,
-// with the columns start and size first, then optionally name, out_of_scope and ranges. start is
+// with the columns start and size first, then optionally name, out_of_scope, ranges, lift and
+// lift_reason. start is
 // the function's entry in the notation the standard uses for that file's format: an address, or
 // for overlay code in an MZ file an offset that lies inside a row of the build's Code ranges. size
 // is the function's body in bytes. A row with a reason in out_of_scope is out of scope. When the
 // body is not one range from start, ranges lists its half-open ranges as start..end in the same
 // notation, separated by spaces; size is their total, and one of them holds start. In an NE file
 // each range, and a body without ranges, ends in the segment it starts in.
+//
+// lift gives each function's lift state in the work protocol's lift
+// (https://dinorefurb.com/work-protocol/#where-the-lift-lives): none, lifted, verified, stuck or
+// excluded, in every row once the column is there. lift_reason gives the reason for a stuck or
+// excluded function, and is empty for the others. The lift figures give the functions and bytes in
+// each state, over every row whether in scope or not, with each byte counted once within a state.
+// An inventory without a lift column has no lift figures.
 //
 // Every file of code a manifest lists, by its format or the unpacked format of a packed file, that
 // has no inventory is listed as without one. Those files are not measured, and no figure here
@@ -83,6 +91,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { completeReadings } from "./complete-reading.ts";
 import { type InventoryRow, codeLocations, filesWithoutInventory, readInventories } from "./inventory.ts";
+import { type LiftReport, liftFigures, liftLine } from "./lift.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
 import { type Mapping, readProvenance, readRegions } from "./side-files.ts";
@@ -129,6 +138,8 @@ interface InventoryReport {
   uncited: Array<{ start: string; size: number; name: string }>;
   /** In-scope functions read completely, and their bytes, each counted once. */
   completeReading: CompleteReadingReport;
+  /** Every function, in scope or not, by lift state, with its bytes counted once within a state. */
+  lift: LiftReport;
   /** What the provenance file gives, or null when there is none or it could not be read. */
   provenance: Record<string, string> | null;
   /** The figures of the regions file, or why there are none. */
@@ -307,6 +318,7 @@ function summarize(inv: {
   build: string;
   file: string;
   functions: InventoryFunction[];
+  hasLift: boolean;
   provenance: Record<string, string> | null;
   mapping: Mapping | { unavailable: string };
   readingUnavailable: string;
@@ -329,6 +341,7 @@ function summarize(inv: {
     completeReading: inv.readingUnavailable
       ? { unavailable: inv.readingUnavailable }
       : { functions: readFns.length, bytes: byteCounts(readFns).union },
+    lift: liftFigures(inv.functions, inv.hasLift),
     provenance: inv.provenance,
     mapping: inv.mapping,
   };
@@ -358,7 +371,12 @@ function sideLines(r: InventoryReport): string[] {
       : `${m.bodyBytes} of ${m.regionBytes} bytes in ${m.regions} executable regions lie in function bodies${share(m.bodyBytes, m.regionBytes)}; ` +
         `outside them ${m.outsideBodies.instructions} bytes are instructions, ${m.outsideBodies.data} data and ${m.outsideBodies.undefined} undefined; ` +
         `${m.bodyBytesOutsideRegions} body bytes lie outside the regions; ${m.startsWithoutInstruction} starts are not at an instruction`;
-  return [`  complete reading: ${reading}`, `  provenance: ${provenance}`, `  mapping: ${mapping}`];
+  return [
+    `  complete reading: ${reading}`,
+    `  lift: ${liftLine(r.lift)}`,
+    `  provenance: ${provenance}`,
+    `  mapping: ${mapping}`,
+  ];
 }
 
 function main(argv: string[]) {
@@ -417,6 +435,7 @@ function main(argv: string[]) {
                     outOfScope: f.outOfScope,
                     citedBy: f.citedBy,
                     ...(inventories[k].readingUnavailable ? {} : { read: f.read }),
+                    ...(f.lift === null ? {} : { lift: f.lift, liftReason: f.liftReason }),
                   })),
                 }
               : r,
@@ -446,7 +465,8 @@ function main(argv: string[]) {
         for (const f of inventories[k].functions)
           console.log(
             `  ${f.start}\t${f.size}\t${f.outOfScope ? `out of scope: ${f.outOfScope}` : f.citedBy.join(", ") || "None"}` +
-              (f.read ? "\tread completely" : ""),
+              (f.read ? "\tread completely" : "") +
+              (f.lift === null ? "" : `\tlift ${f.lift}${f.liftReason ? `: ${f.liftReason}` : ""}`),
           );
     });
     for (const p of problems) console.error(p);

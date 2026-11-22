@@ -206,7 +206,7 @@ from v1.7.2.
 
 [ADR 0050](decisions/0050-rust-dos-only-sessions.md) then made rust-dos the only backend, pinned at
 v1.8.1, and removed the DOSBox-X sessions, their save states and gated breakpoints. Package 0.11.0
-is the last release with them. Incompatibilities are investigated and fixed through upstream
+is the last release with them. The session now pins v1.9.2. Incompatibilities are investigated and fixed through upstream
 rust-dos PRs. [rust-dos#515](https://github.com/dividebysandwich/rust-dos/issues/515) to
 [rust-dos#522](https://github.com/dividebysandwich/rust-dos/issues/522) propose moving the run
 lock, the owner-bound process, the event log's ordering and hashing, the session record, the
