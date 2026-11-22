@@ -318,6 +318,7 @@ function summarize(inv: {
   build: string;
   file: string;
   functions: InventoryFunction[];
+  hasLift: boolean;
   provenance: Record<string, string> | null;
   mapping: Mapping | { unavailable: string };
   readingUnavailable: string;
@@ -340,7 +341,7 @@ function summarize(inv: {
     completeReading: inv.readingUnavailable
       ? { unavailable: inv.readingUnavailable }
       : { functions: readFns.length, bytes: byteCounts(readFns).union },
-    lift: liftFigures(inv.functions),
+    lift: liftFigures(inv.functions, inv.hasLift),
     provenance: inv.provenance,
     mapping: inv.mapping,
   };

@@ -382,7 +382,19 @@ test("an inventory with a header and no rows is measured as a file of no functio
     output,
     /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 0 of 0 functions cited, 0 of 0 bytes; 0 out of scope$/m,
   );
+  assert.match(output, /^ {2}lift: unavailable, the inventory has no lift column$/m);
   assert.doesNotMatch(output, /not measured/);
+});
+
+test("an inventory with a lift column and no rows gives lift figures of 0", (t) => {
+  const root = copy(t);
+  inventory(root, "start\tsize\tlift\n");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^ {2}lift: 0 none \(0 bytes\), 0 lifted \(0 bytes\), 0 verified \(0 bytes\), 0 stuck \(0 bytes\), 0 excluded \(0 bytes\)$/m,
+  );
 });
 
 test("an offset start for overlay code must lie inside a row of the build's Code ranges", (t) => {

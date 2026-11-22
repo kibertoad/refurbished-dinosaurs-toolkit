@@ -58,6 +58,8 @@ export interface Inventory {
   xxh3: string;
   /** The rows that could be read. */
   functions: InventoryRow[];
+  /** True when the header has a lift column, so every row gives a lift state. */
+  hasLift: boolean;
   /** How many rows the inventory has below its header, read or not. */
   rows: number;
   /** How many of them could not be read; each has a problem. */
@@ -412,6 +414,7 @@ export function readInventories(
       format,
       xxh3: String(bf.unpacked?.xxh3 ?? bf.xxh3),
       functions,
+      hasLift: columns.includes("lift"),
       rows: lines.length,
       // Every row is either read into functions or rejected with a problem.
       invalidRows: lines.length - functions.length,

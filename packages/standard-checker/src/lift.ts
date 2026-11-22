@@ -15,10 +15,11 @@ function unionBytes(functions: InventoryRow[]): number {
 
 /**
  * Every function, in scope or not, by lift state, with its bytes counted once within a state, or
- * why there are no figures: an inventory read without a lift column.
+ * why there are no figures: an inventory read without a lift column. hasLift says whether its header
+ * has the column, which an inventory without rows does not show through them.
  */
-export function liftFigures(functions: InventoryRow[]): LiftReport {
-  if (functions.some((f) => f.lift === null)) return { unavailable: "the inventory has no lift column" };
+export function liftFigures(functions: InventoryRow[], hasLift: boolean): LiftReport {
+  if (!hasLift) return { unavailable: "the inventory has no lift column" };
   const figures = {} as Record<LiftState, { functions: number; bytes: number }>;
   for (const state of LIFT_STATES) {
     const inState = functions.filter((f) => f.lift === state);
