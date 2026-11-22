@@ -75,11 +75,19 @@ jobs:
         run: uv run --isolated --with-editable . python -B -m unittest discover -s tests -p 'test*.py'
       - name: Build
         run: uv build packages/disc-archiver --out-dir dist
+      # Fails when PyPI already has this version with files that differ from this build, which
+      # happens when another commit was released as this version and its tag was never created.
+      # The builds are reproducible, so a rerun of this commit passes.
+      - name: Check the version on PyPI
+        run: node tools/release/plan.ts check-published dinorefurb-disc-archiver "$VERSION" dist
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
-          # A rerun after a failed release step finds the version already uploaded.
+          # A rerun after a failed release step finds this build's files already uploaded,
+          # which the check above has compared byte for byte.
           skip-existing: true
       - name: Tag and create the GitHub release
         run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --generate-notes
