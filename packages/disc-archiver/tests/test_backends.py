@@ -13,7 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from synthetic import REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, redumper_analysis_steps, redumper_log, securom_entry
+from synthetic import COPYLOK_EARLY_USE, REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, redumper_analysis_steps, redumper_log, securom_entry
 
 from dinorefurb_disc_archiver import backends, cli, dataerrors, dpm, pipeline, redumper
 from dinorefurb_disc_archiver.disc import DiscError
@@ -34,13 +34,14 @@ from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 # call's arguments are appended to calls.json. STAND_IN_ANALYSIS adds the protection, split, hash
 # and info steps of a protected disc to the disc run's log, and makes "hash" and "info" log their
 # steps of that disc; without it they log the info step of an unprotected one. STAND_IN_INFO_FAILS
-# makes "info" fail.
+# makes "info" fail. STAND_IN_PVD_USE, hex bytes, starts the application use field of the dump's
+# primary volume descriptor with them when STAND_IN_ERRORS is set.
 FAKE_REDUMPER = """\
 #!{python}
 import json, os, sys
 sys.path.insert(0, {tests!r})
 from pathlib import Path
-from synthetic import SyntheticDisc, iso_image, redumper_analysis_steps, redumper_log, write_redumper_dump
+from synthetic import SyntheticDisc, iso_image, redumper_analysis_steps, redumper_log, with_application_use, write_redumper_dump
 command = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "disc"
 args = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
 folder, name = Path(args["image-path"]), args["image-name"]
@@ -105,7 +106,9 @@ log = redumper_log(
 )
 Path(folder, name + ".log").write_text(log)
 if errors:
-    write_redumper_dump(folder, name, iso_image(), set(errors["bad"]))
+    use = os.environ.get("STAND_IN_PVD_USE")
+    pressed = with_application_use(iso_image(), bytes.fromhex(use)) if use else iso_image()
+    write_redumper_dump(folder, name, pressed, set(errors["bad"]))
     remaining.write_text(json.dumps(errors["bad"]))
     sys.exit(4)
 exit_code = int(os.environ.get("STAND_IN_EXIT", "0"))
@@ -274,7 +277,7 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(next(c for c in calls if c[0] == "split")[-1], "--image-name=Game")
         self.assertEqual(
             manifest["source"]["dataErrors"],  # type: ignore[index]
-            {"sectorsBefore": 1, "refined": True, "sectors": 0, "edcFailing": 0, "ranges": [], "files": [], "outcome": "cleared"},
+            {"sectorsBefore": 1, "refined": True, "sectors": 0, "edcFailing": 0, "ranges": [], "files": [], "outcome": "cleared", "protection": None},
         )
         self.assertTrue(manifest_ok(manifest))
 
@@ -291,7 +294,7 @@ class ProgramBackendTests(unittest.TestCase):
             record,
             {
                 "sectorsBefore": 2, "refined": True, "sectors": 2, "edcFailing": 2,
-                "ranges": [{"first": 5, "last": 6, "sectors": 2}], "files": [], "outcome": "outsideFiles",
+                "ranges": [{"first": 5, "last": 6, "sectors": 2}], "files": [], "outcome": "outsideFiles", "protection": None,
             },
         )
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
@@ -360,6 +363,35 @@ class ProgramBackendTests(unittest.TestCase):
         record = manifest["source"]["dataErrors"]  # type: ignore[index]
         self.assertEqual((record["refined"], record["sectors"], record["outcome"]), (False, 2, "tooMany"))
         self.assertFalse(manifest_ok(manifest))
+
+    def test_a_copylok_disc_rereads_past_the_limit_and_explains_its_deliberate_sectors(self) -> None:
+        lines: list[str] = []
+        errors = json.dumps({"bad": [5, 6], "transient": False})
+        environment = {"STAND_IN_ERRORS": errors, "STAND_IN_PVD_USE": COPYLOK_EARLY_USE.hex()}
+        with mock.patch.object(dataerrors, "REFINE_MAX_SECTORS", 1), mock.patch.dict(os.environ, environment):
+            manifest = archive(output=self.dir / "out", profile=BUILTIN_PROFILES["data-only"], log=lines.append, drive="E:", name="Game", backend="redumper")
+        calls = json.loads((self.dir / "out" / "archival" / "calls.json").read_text())
+        # Two bad sectors exceed the patched limit of one, but the early variant's 1,850 deliberate ones raise it.
+        self.assertIn("refine", [c[0] for c in calls])
+        record = manifest["source"]["dataErrors"]  # type: ignore[index]
+        self.assertEqual(record["protection"], {"system": "CopyLok", "variant": "early", "typicalErrors": 1850})  # type: ignore[index]
+        self.assertEqual((record["refined"], record["outcome"]), (True, "outsideFiles"))  # type: ignore[index]
+        self.assertTrue(any("carries the signature of CopyLok (early variant)" in line for line in lines), lines)
+        self.assertFalse(any(line.startswith("Clean the disc") for line in lines))
+
+    def test_a_copylok_disc_with_errors_in_files_gets_no_advice_to_clean_it(self) -> None:
+        readme = iso_extent(iso_image(), "/README.TXT;1")
+        printed = io.StringIO()
+        errors = json.dumps({"bad": [readme], "transient": False})
+        arguments = ["rip", "--drive", "E:", "--backend", "redumper", "--output", str(self.dir / "out"), "--profile", "data-only", "--accept-personal-use"]
+        environment = {"STAND_IN_ERRORS": errors, "STAND_IN_PVD_USE": COPYLOK_EARLY_USE.hex()}
+        with mock.patch.dict(os.environ, environment), redirect_stdout(printed), redirect_stderr(printed):
+            code = cli.main(arguments)
+        # A bad sector inside a file still fails the rip: the signature does not say which sectors are deliberate.
+        self.assertEqual(code, cli.EXIT_MISMATCH)
+        self.assertIn("protection: CopyLok (early variant), whose discs have about 1,850 deliberate ones", printed.getvalue())
+        self.assertIn("CopyLok's deliberate sectors are among them", printed.getvalue())
+        self.assertNotIn("Clean the disc", printed.getvalue())
 
     def test_a_failed_run_is_not_judged_by_an_earlier_run_in_the_log(self) -> None:
         # redumper appends to the log: an earlier misread run must not stand in for this one.

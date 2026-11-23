@@ -314,18 +314,31 @@ def examine(directory: Path, name: str, offset: int, tracks: list[tuple[int, int
     return Facts(sectors, failing, files)
 
 
-def outcome(before: int, facts: Facts) -> str:
+def primary_descriptor(directory: Path, name: str, offset: int) -> bytes:
+    """The user data of sector 16 of the dump ``name`` in ``directory``: where an ISO 9660 volume
+    starting at LBA 0 keeps its primary volume descriptor."""
+    scram = Scram(directory / f"{name}.scram", offset)
+    try:
+        return scram.user_data(16)
+    finally:
+        scram.close()
+
+
+def outcome(before: int, facts: Facts, limit: int | None = None) -> str:
     """The manifest's ``outcome`` for a dump that had ``before`` bad sectors and now has ``facts``.
 
+    ``limit`` is the most bad sectors that were read again: ``REFINE_MAX_SECTORS`` when None, more
+    for a protection's deliberate ones.
+
     - ``cleared``: rereading left no bad sector;
-    - ``tooMany``: there were more than ``REFINE_MAX_SECTORS``, so they were not read again;
+    - ``tooMany``: there were more than ``limit``, so they were not read again;
     - ``unlocated``: the file system could not be read, so the files holding them are unknown;
     - ``insideFiles``: at least one file holds a bad sector;
     - ``outsideFiles``: no file holds any of them.
     """
     if not facts.sectors:
         return "cleared"
-    if before > REFINE_MAX_SECTORS:
+    if before > (REFINE_MAX_SECTORS if limit is None else limit):
         return "tooMany"
     if facts.files is None:
         return "unlocated"
