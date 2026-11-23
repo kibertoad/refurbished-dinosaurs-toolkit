@@ -250,6 +250,11 @@ def _report_data_errors(record: dict | None) -> None:  # type: ignore[type-arg]
         f"data errors: {record['outcome']}, {record['sectors']} of {record['sectorsBefore']} bad sectors left"
         f"{' after reading them again' if record['refined'] else ''}"
     )
+    protection = record.get("protection")
+    if protection:
+        typical = protection["typicalErrors"]
+        expected = f", whose discs have about {typical:,} deliberate ones" if typical is not None else ""
+        print(f"  protection: {protection['system']} ({protection['variant']} variant){expected}")
     for item in record["files"] or []:
         print(f"  in {item['path']}: {item['sectors']} sectors")
 

@@ -61,6 +61,8 @@ redumper does not write the image of a dump whose data track has sectors the dri
 
 With at most 2,000 bad sectors it runs `redumper refine` once, at speed 8 with 3 rereads per sector (`--backend-arg=--speed=` or `--retries=` override them), with the sector order the dump used, and reads the sectors again. A slow reread clears dust and marginal reads; a sector that fails three slow reads fails the same way on more. With more bad sectors it does not reread: about ten minutes of rereads at most is the limit before dumping again is the better use of time.
 
+Some protections press sectors that no drive reads. redumper's protection step does not check for CopyLok (also sold as CodeLok), so the archiver reads the dump's ISO 9660 primary volume descriptor itself: CopyLok's mastering leaves a signature in its application use field, the layout BinaryObjectScanner checks to name the protection for Redump. When the signature is there, the log says so, `dataErrors.protection` records it, and the variant's typical count of deliberate sectors (255 to about 1,850) is added to the 2,000-sector limit, so the sectors misread next to the deliberate ones are still read again. Those deliberate sectors stay bad on every drive, and Redump keeps them as they read, so the advice to clean the disc is replaced with a note on how many to expect. Compare the image with the disc's Redump entry to tell them from misreads.
+
 Then `redumper split` writes the image, with `--force-split` while bad sectors remain. redumper regenerates those sectors from the data it read, which is how Redump's dumps of such discs hold them, so a disc whose bad sectors are deliberate can still match its Redump entry. Then `redumper hash` and `redumper info` run on the image, the steps that follow split in redumper's disc sequence, so `source.discAnalysis` holds what the info step finds (the SecuROM scheme that `--dpm auto` acts on among it) whether or not the first read had errors. They read only the image files and get the same `--backend-arg` options. When one fails, the rip goes on and the fields it fills stay null, also when `redumper info` logged part of its findings before the error; `--dpm auto` then says it cannot tell whether the disc has SecuROM and does not measure, so measure it with `--dpm always` or `disc-archiver dpm`. The manifest's `source.dataErrors` records what happened (see [The output folder](#the-output-folder)):
 
 | `outcome` | Means | Exit code |
@@ -68,7 +70,7 @@ Then `redumper split` writes the image, with `--force-split` while bad sectors r
 | `cleared` | Reading again cleared every bad sector. | `0` |
 | `outsideFiles` | Bad sectors remain, and no file holds any of them: every file was read intact. Some copy protections write such sectors on purpose. The archiver does not claim that a disc is protected, only where the sectors are. | `0` |
 | `insideFiles` | At least one file holds a bad sector. The log and `files` name them. Clean the disc and copy it again, or copy it in another drive. | `3` |
-| `tooMany` | More than 2,000 bad sectors, so they were not read again. | `3` |
+| `tooMany` | More than 2,000 bad sectors (plus the typical count of a CopyLok disc's deliberate ones), so they were not read again. | `3` |
 | `unlocated` | Bad sectors remain, and the disc's ISO 9660 volume could not be read to say which files hold them. | `3` |
 
 ### Data positions (DPM)
@@ -471,6 +473,7 @@ My Game/
   - `ranges`: the sectors left, as `first` and `last` LBA and the count of bad `sectors` between them; sectors less than 16 apart share a range.
   - `files`: each file of the primary ISO 9660 tree that holds a bad sector, as its `path` and the count of `sectors`; empty when none does, null when the volume could not be read. A directory whose records hold a bad sector is listed too, with a path ending in `/`, since the damage can hide the files it lists.
   - `outcome`: `cleared`, `outsideFiles`, `insideFiles`, `tooMany` or `unlocated`.
+  - `protection`: the protection whose signature the disc's primary volume descriptor carries, null when it carries none. It holds `system` (`CopyLok`), `variant` (`early`, `fewerErrors`, `pairErrors`, `soloErrors`, or `unknown` for a signature whose other fields match no known variant) and `typicalErrors`, the count of deliberately unreadable sectors on discs of that variant (null for `unknown`).
 
   `discAnalysis` is what redumper's steps after the dump logged about the disc, read from the log of its last run that dumped from the drive to the end of the log, so the `refine`, `split`, `hash` and `info` runs added after [data errors](#data-errors) count too. Where a step ran more than once, its last run counts. It is null for any other source and when the log shows no dump. A field is null when the step that logs it did not run or did not log it. The archiver prints a line when it holds a protection, a SecuROM scheme or offset shifts. The fields:
   - `protections`: what redumper's protection step found, `[]` when it logged `protection: none`. redumper checks for SafeDisc and a few console schemes there; `none` does not rule out a protection it does not check for.

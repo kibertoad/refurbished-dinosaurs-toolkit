@@ -55,6 +55,18 @@ def second_pvd(iso: bytes, changes: dict[int, int]) -> bytes:
     return iso[: 17 * 2048] + bytes(copy) + iso[18 * 2048 :]
 
 
+COPYLOK_EARLY_USE = bytes.fromhex("e18ad34ed1add34ea07dabc9")
+"""The start of an application use field with CopyLok's signature, early variant: the fields after
+these bytes are zero."""
+
+
+def with_application_use(iso: bytes, use: bytes) -> bytes:
+    """``iso`` with the application use field of its primary volume descriptor (byte 883 of
+    sector 16) starting with ``use`` and zero after it."""
+    start = 16 * 2048 + 883
+    return iso[:start] + use + bytes(512 - len(use)) + iso[start + 512 :]
+
+
 def _iso_name(name: str, is_file: bool) -> str:
     cleaned = "".join(c if c.isalnum() or c in "._" else "_" for c in name.upper())
     if not is_file:

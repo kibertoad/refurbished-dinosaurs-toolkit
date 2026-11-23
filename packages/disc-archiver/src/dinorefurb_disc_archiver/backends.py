@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import dataerrors, redumper, tools
+from . import copylok, dataerrors, redumper, tools
 from .ccd import crc16
 from .disc import COOKED_SECTOR, DiscError
 from .tools import Log
@@ -179,7 +179,10 @@ def _recover(
 
     With at most ``dataerrors.REFINE_MAX_SECTORS`` bad sectors, ``redumper refine`` reads them once
     more, slowly (``REFINE_SPEED``, ``REFINE_RETRIES``), with the drive's sector order given
-    explicitly, since ``--auto-detect`` acts in the disc command only. Then ``redumper split``
+    explicitly, since ``--auto-detect`` acts in the disc command only. A disc whose primary volume
+    descriptor carries CopyLok's signature (see :mod:`.copylok`) has sectors unreadable on purpose:
+    the variant's typical count of them is added to that limit, so the sectors misread next to them
+    are still read again. Then ``redumper split``
     writes the image, with ``--force-split`` while bad sectors remain: it regenerates them from
     their data, as Redump's dumps of such discs hold them. ``redumper hash`` and ``redumper info``
     then run on the image with the same ``extra`` options, the steps the disc command ends with
@@ -188,8 +191,9 @@ def _recover(
     when one fails, the rip goes on without it and the analysis lacks what it logs. Returns the
     ``dataErrors`` record:
     ``sectorsBefore``, ``refined``, ``sectors`` left, ``edcFailing`` among them, their ``ranges``,
-    the ``files`` holding them (null when the file system could not be read) and the ``outcome``
-    (see ``dataerrors.outcome``).
+    the ``files`` holding them (null when the file system could not be read), the ``outcome``
+    (see ``dataerrors.outcome``) and the ``protection`` that writes such sectors on purpose (see
+    ``copylok.identify``), null when the disc carries no signature of one.
     """
     offset = dataerrors.write_offset(log_text)
     if offset is None:
@@ -201,8 +205,21 @@ def _recover(
     if not before:
         raise DiscError(f"redumper stopped on data errors, but {name}.state flags no sector; its log is {name}.log")
     log(f"redumper found {before} sectors with C2 errors, {facts.edc_failing} of them with damaged data.")
+    protection = copylok.identify(dataerrors.primary_descriptor(directory, name, offset))
+    limit = dataerrors.REFINE_MAX_SECTORS
+    if protection is not None:
+        typical = protection["typicalErrors"]
+        if isinstance(typical, int):
+            limit += typical
+            expected = f"about {typical:,} sectors"
+        else:
+            expected = "sectors"
+        log(
+            f"The disc's primary volume descriptor carries the signature of CopyLok ({protection['variant']} variant), "
+            f"a protection whose pressings have {expected} that no drive reads, on purpose. Redump keeps them as they read."
+        )
     image = [f"--image-path={directory.absolute()}", f"--image-name={name}"]
-    refined = before <= dataerrors.REFINE_MAX_SECTORS
+    refined = before <= limit
     if refined:
         order = redumper_drive(log_text, extra)
         explicit = (
@@ -218,15 +235,15 @@ def _recover(
         tools.run([program, "refine", f"--drive={drive}", *image, *explicit, *extra, *pace], log, cwd=directory)
         facts = dataerrors.examine(directory, name, offset, tracks)
     else:
-        log(f"That is more than {dataerrors.REFINE_MAX_SECTORS}, so they are not read again.")
+        log(f"That is more than {limit}, so they are not read again.")
     tools.run([program, "split", *image, *extra, *(["--force-split"] if facts.sectors else [])], log, cwd=directory)
     for step in ("hash", "info"):
         try:
             tools.run([program, step, *image, *extra], log, cwd=directory)
         except DiscError as error:
             log(f"redumper {step} failed on the image ({error}), so the disc analysis lacks what it finds.")
-    result = dataerrors.outcome(before, facts)
-    _log_outcome(log, result, facts)
+    result = dataerrors.outcome(before, facts, limit)
+    _log_outcome(log, result, facts, protection)
     return {
         "sectorsBefore": before,
         "refined": refined,
@@ -235,10 +252,11 @@ def _recover(
         "ranges": dataerrors.ranges(facts.sectors),
         "files": facts.as_files(),
         "outcome": result,
+        "protection": protection,
     }
 
 
-def _log_outcome(log: Log, result: str, facts: dataerrors.Facts) -> None:
+def _log_outcome(log: Log, result: str, facts: dataerrors.Facts, protection: dict[str, object] | None = None) -> None:
     if result == "cleared":
         log("Reading them again cleared every bad sector.")
         return
@@ -253,7 +271,16 @@ def _log_outcome(log: Log, result: str, facts: dataerrors.Facts) -> None:
         log(f"{count} bad sectors remain, and the disc's file system could not be read to say which files hold them.")
     else:
         log(f"{count} bad sectors were found.")
-    log("Clean the disc and copy it again, or copy it in another drive.")
+    if protection is None:
+        log("Clean the disc and copy it again, or copy it in another drive.")
+        return
+    typical = protection["typicalErrors"]
+    expected = f"about {typical:,}" if isinstance(typical, int) else "an unknown number"
+    log(
+        f"CopyLok's deliberate sectors are among them, and discs of its {protection['variant']} variant have {expected}. "
+        "Cleaning the disc or using another drive does not clear those. Compare the image with the disc's Redump entry: "
+        "sectors beyond the deliberate ones may still be misread."
+    )
 
 
 # redumper b767 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
