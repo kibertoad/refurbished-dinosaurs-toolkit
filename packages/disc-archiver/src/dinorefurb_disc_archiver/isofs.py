@@ -6,6 +6,7 @@ import calendar
 import hashlib
 import io
 import os
+import struct
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,10 @@ from .disc import COOKED_SECTOR, FRAMES_PER_SECOND, MSF_OFFSET, DiscError, NotDa
 
 PVD_SECTOR = 16
 MAXIMUM_FILES = 200_000
+# What pycdlib raises on a volume it cannot read. Besides its own exception, malformed structures
+# reach its parsers as short or misaligned buffers: a path table whose recorded size runs past its
+# last record makes PathTableRecord.parse fail with struct.error, for example.
+UNREADABLE = (PyCdlibException, struct.error, IndexError)
 
 
 class UnsupportedFileSystem(DiscError):
@@ -462,7 +467,7 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
         try:
             stream.replaced = _agreeing_copies(stream, volume)
             iso.open_fp(stream)
-        except PyCdlibException as error:
+        except UNREADABLE as error:
             raise UnsupportedFileSystem(
                 f"track {track.number} is not a readable ISO 9660 file system: {error}{_first_difference(stream, volume)}"
             ) from None
@@ -496,7 +501,7 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
                     if stamp is not None:
                         os.utime(destination.joinpath(*parts), (stamp, stamp))
                 entries.append(FileEntry("/".join(parts), writer.size, writer.sha256.hexdigest(), writer.xxh3.hexdigest()))
-    except PyCdlibException as error:
+    except UNREADABLE as error:
         raise DiscError(f"track {track.number} is not a readable ISO 9660 file system: {error}") from None
     finally:
         try:
