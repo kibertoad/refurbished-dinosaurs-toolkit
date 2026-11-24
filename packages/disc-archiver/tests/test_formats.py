@@ -308,6 +308,22 @@ class DataFormatTests(FormatTestCase):
         self.assertEqual(unavailable["format"], "files")
         self.assertIn("is not a readable ISO 9660 file system", unavailable["reason"])
 
+    def test_a_path_table_longer_than_its_records_leaves_files_unavailable(self) -> None:
+        padded = self.dir / "padded.iso"
+        iso = bytearray(iso_image({"README.TXT": b"x"}))
+        # The primary volume descriptor gives the path table 20 bytes where its one record takes
+        # 10, as some mastering tools wrote it. pycdlib reads the zeros after the record as more
+        # records and fails with struct.error, not with one of its own exceptions.
+        iso[16 * 2048 + 132 : 16 * 2048 + 140] = (20).to_bytes(4, "little") + (20).to_bytes(4, "big")
+        padded.write_bytes(bytes(iso))
+        manifest = derive(read_iso(padded), self.dir / "out", "Synth", ["iso", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso"])  # type: ignore[index]
+        self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+        (unavailable,) = manifest["unavailable"]  # type: ignore[misc]
+        self.assertEqual(unavailable["format"], "files")
+        self.assertIn("is not a readable ISO 9660 file system", unavailable["reason"])
+        self.assertFalse((self.dir / "out" / "files").exists())
+
     def test_joliet_versions_are_dropped_from_extracted_names(self) -> None:
         versioned = self.dir / "versioned.iso"
         versioned.write_bytes(iso_image({"Setup.exe;1": b"x", "a;b.txt": b"y"}))
